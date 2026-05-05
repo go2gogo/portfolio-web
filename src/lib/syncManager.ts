@@ -48,10 +48,11 @@ function getLastSyncedTs(): string | null {
 }
 
 // 로그인 + 모드 OFF 로 시작 (자동 sync 는 사용자가 명시적으로 ON 해야 활성)
-// — 자동 sync 는 핑퐁/덮어쓰기 등 예기치 않은 동작 가능 → 옵트인 안전 기본값
+// — signIn() 은 redirect 라 호출 후 페이지가 google 로 이동, 돌아오면 token 저장됨
+// — 사전 setSyncMode("off") 해두면 redirect 후 이미 OFF 상태 유지
 export async function enableSync(): Promise<void> {
-  await signIn();
   setSyncMode("off");
+  signIn();  // redirect — 이 시점 이후 코드는 페이지 navigate 로 실행 안 됨
 }
 
 // 로그아웃 + 상태 초기화

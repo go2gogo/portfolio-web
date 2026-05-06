@@ -215,6 +215,12 @@ interface YahooChartResp {
       };
       events?: {
         dividends?: Record<string, { date: number; amount: number }>;
+        splits?: Record<string, {
+          date: number;
+          numerator: number;
+          denominator: number;
+          splitRatio?: string;
+        }>;
       };
     }>;
   };
@@ -226,25 +232,42 @@ export interface DividendEvent {
   amount: number;     // 주당 배당금 (원 또는 USD)
 }
 
+// 액면분할/병합 이벤트
+export interface SplitEvent {
+  date: string;        // YYYY-MM-DD (KST)
+  numerator: number;   // 분할 후 (예: 50:1 → 50)
+  denominator: number; // 분할 전 (예: 50:1 → 1)
+  ratio: string;       // "50:1" 형태 표시용
+}
+
+// DART 공시 (OpenDART API list.json 기반)
+export interface DartDisclosure {
+  date: string;        // YYYY-MM-DD (rcept_dt → KST)
+  title: string;       // 보고서명 (report_nm)
+  url: string;         // DART 상세 URL
+  reportNm: string;    // 원본 보고서명 (filter 용)
+}
+
 async function fetchPriceHistoryFor(
   symbol: string, range: string,
 ): Promise<PricePoint[]> {
-  const r = await fetchPriceHistoryWithDividendsFor(symbol, range);
+  const r = await fetchPriceHistoryWithEventsFor(symbol, range);
   return r.prices;
 }
 
-// 가격 + 배당 이벤트 (배당락일) 같이 반환
-async function fetchPriceHistoryWithDividendsFor(
+// 가격 + 배당 + 액면분할 이벤트 통합 fetch
+async function fetchPriceHistoryWithEventsFor(
   symbol: string, range: string,
-): Promise<{ prices: PricePoint[]; dividends: DividendEvent[] }> {
+): Promise<{ prices: PricePoint[]; dividends: DividendEvent[]; splits: SplitEvent[] }> {
   const target =
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}` +
-    `?range=${range}&interval=1d&events=div`;
+    `?range=${range}&interval=1d&events=div%2Csplit`;
+  const empty = { prices: [] as PricePoint[], dividends: [] as DividendEvent[], splits: [] as SplitEvent[] };
   const resp = await fetchProxied(target);
-  if (!resp.ok) return { prices: [], dividends: [] };
+  if (!resp.ok) return empty;
   const data = await resp.json() as YahooChartResp;
   const res = data.chart?.result?.[0];
-  if (!res) return { prices: [], dividends: [] };
+  if (!res) return empty;
   const ts = res.timestamp ?? [];
   const q = res.indicators?.quote?.[0] ?? {};
   const closes = q.close ?? [];
@@ -279,7 +302,21 @@ async function fetchPriceHistoryWithDividendsFor(
     });
   }
   dividends.sort((a, b) => a.date.localeCompare(b.date));
-  return { prices: points, dividends };
+  // 액면분할 이벤트
+  const splits: SplitEvent[] = [];
+  const splitMap = res.events?.splits ?? {};
+  for (const v of Object.values(splitMap)) {
+    const d = new Date(v.date * 1000);
+    const kst = new Date(d.getTime() + (d.getTimezoneOffset() + 540) * 60_000);
+    splits.push({
+      date: kst.toISOString().slice(0, 10),
+      numerator: v.numerator,
+      denominator: v.denominator,
+      ratio: v.splitRatio || `${v.numerator}:${v.denominator}`,
+    });
+  }
+  splits.sort((a, b) => a.date.localeCompare(b.date));
+  return { prices: points, dividends, splits };
 }
 
 // 한국 6자리 → KOSPI 시도 → 실패 시 KOSDAQ
@@ -292,14 +329,80 @@ export async function fetchKrPriceHistory(
   return await fetchPriceHistoryFor(`${ticker}.KQ`, range);
 }
 
-// 한국 종목 가격 + 배당 이벤트 통합 fetch
-export async function fetchKrPriceHistoryWithDividends(
+// 한국 종목 가격 + 배당 + 액면분할 이벤트 통합 fetch
+export async function fetchKrPriceHistoryWithEvents(
   ticker: string, range = "1y",
-): Promise<{ prices: PricePoint[]; dividends: DividendEvent[] }> {
-  if (!/^[\dA-Za-z]{6}$/.test(ticker)) return { prices: [], dividends: [] };
-  const ks = await fetchPriceHistoryWithDividendsFor(`${ticker}.KS`, range);
+): Promise<{ prices: PricePoint[]; dividends: DividendEvent[]; splits: SplitEvent[] }> {
+  const empty = { prices: [] as PricePoint[], dividends: [] as DividendEvent[], splits: [] as SplitEvent[] };
+  if (!/^[\dA-Za-z]{6}$/.test(ticker)) return empty;
+  const ks = await fetchPriceHistoryWithEventsFor(`${ticker}.KS`, range);
   if (ks.prices.length > 0) return ks;
-  return await fetchPriceHistoryWithDividendsFor(`${ticker}.KQ`, range);
+  return await fetchPriceHistoryWithEventsFor(`${ticker}.KQ`, range);
+}
+
+// 공시 fetch — Naver 모바일 API (인증 불필요, m.stock.naver.com 이미 워커 화이트리스트)
+//   페이지당 20건 고정 (size 파라미터 무시) → 1년치 보통 3-5페이지 병렬 fetch.
+//   노이즈 필터 — 시세 모니터링·5% 보고·신탁의결권·정정 등 차트에 의미 없는 공시 제거.
+const DISCLOSURE_NOISE_PATTERNS = [
+  "가격제한폭",            // 자동 시세 모니터링
+  "주식선물",              // 선물·옵션 거래 모니터링
+  "주식옵션",
+  "신탁업자",              // 신탁 의결권 행사
+  "임원ㆍ주요주주",        // 5% 보고서 (대부분 미세 변동)
+  "임원·주요주주",
+  "임원 · 주요주주",
+  "주식등의대량보유",      // 대량보유상황보고서 (마찬가지)
+  "주식 등의 대량보유",
+  "특정증권등소유상황",    // 특정증권 소유 보고
+  "(정정)",                // 정정공시 — 원본만 표시
+  "(첨부정정)",
+  "(기재정정)",
+];
+
+export async function fetchKrDisclosures(
+  ticker: string, months = 12,
+): Promise<DartDisclosure[]> {
+  if (!/^\d{6}$/.test(ticker)) return [];
+
+  const since = new Date();
+  since.setMonth(since.getMonth() - months);
+
+  const requests = [1, 2, 3, 4, 5].map(page =>
+    fetchProxied(`https://m.stock.naver.com/api/stock/${ticker}/disclosure?page=${page}&size=100`)
+      .then(r => r.ok ? r.json() : [])
+      .catch(() => [])
+  );
+  const pages = await Promise.all(requests);
+
+  const seen = new Set<number>();
+  const out: DartDisclosure[] = [];
+  for (const items of pages) {
+    if (!Array.isArray(items)) continue;
+    for (const it of items as Array<{ disclosureId: number; title: string; datetime: string }>) {
+      if (!it || seen.has(it.disclosureId)) continue;
+      seen.add(it.disclosureId);
+      const dateOnly = (it.datetime || "").slice(0, 10);
+      if (!dateOnly) continue;
+      if (new Date(dateOnly) < since) continue;
+      const title = it.title || "";
+      if (DISCLOSURE_NOISE_PATTERNS.some(p => title.includes(p))) continue;
+      // 회사명 접두 제거 — 두 패턴 다 처리:
+      //   "삼성전자(주) 현금배당 결정"        → "현금배당 결정"
+      //   "(주)에이치제이중공업 유상증자 결정" → "유상증자 결정"
+      const cleaned = title
+        .replace(/^[^()\s]+\(주\)\s*/, "")
+        .replace(/^\(주\)[^\s]+\s*/, "")
+        .trim() || title;
+      out.push({
+        date: dateOnly,
+        title: cleaned,
+        url: `https://m.stock.naver.com/domestic/stock/${ticker}/disclosure`,
+        reportNm: title,
+      });
+    }
+  }
+  out.sort((a, b) => a.date.localeCompare(b.date));
+  return out;
 }
 
 // 8시 KST 이전 + body[0] 전부 0 → body[1] 폴백 (데스크톱 v2 동일)

@@ -83,8 +83,8 @@ import {
 } from "../lib/fundamentals";
 import type { FundamentalData, ConsensusReport, Shareholder } from "../lib/fundamentals";
 import { signColor } from "../lib/format";
-import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithDividends } from "../lib/api";
-import type { DividendEvent } from "../lib/api";
+import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithEvents, fetchKrDisclosures } from "../lib/api";
+import type { DividendEvent, SplitEvent, DartDisclosure } from "../lib/api";
 import type { PricePoint } from "../lib/api";
 import type { Investor } from "../types";
 
@@ -641,15 +641,24 @@ function InvestorChartsSection({
   ticker: string; history: Investor[];
   targetPrice?: number; myAvgPrice?: number;
 }) {
-  // 가격 + 거래량 + 배당 이벤트 (Yahoo 1y, KOSPI→KOSDAQ 자동 폴백)
+  // 가격 + 거래량 + 배당 + 액면분할 (Yahoo 1y, KOSPI→KOSDAQ 자동 폴백)
   const { data: priceData, isLoading: pricesLoading } = useQuery({
-    queryKey: ["price-history-modal-with-dividends", ticker],
-    queryFn: () => fetchKrPriceHistoryWithDividends(ticker, "1y"),
+    queryKey: ["price-history-modal-with-events", ticker],
+    queryFn: () => fetchKrPriceHistoryWithEvents(ticker, "1y"),
     enabled: /^[\dA-Za-z]{6}$/.test(ticker),
     staleTime: 5 * 60_000,
   });
   const prices = priceData?.prices;
   const dividends = priceData?.dividends ?? [];
+  const splits = priceData?.splits ?? [];
+
+  // 공시 (Naver m.stock API, 인증 불필요)
+  const { data: disclosures } = useQuery({
+    queryKey: ["disclosures-modal", ticker],
+    queryFn: () => fetchKrDisclosures(ticker, 12),
+    enabled: /^\d{6}$/.test(ticker),
+    staleTime: 30 * 60_000,    // 30분 — 공시 변동 빈도 적음
+  });
 
   // 시간순 정렬 + 누적 합 — useMemo 로 ref 안정화 (재렌더 시 차트 재생성 방지)
   const data = useMemo(() => [...history].reverse(), [history]);
@@ -686,7 +695,8 @@ function InvestorChartsSection({
       {alignedPrices.length > 1 ? (
         <PriceVolumeChart prices={alignedPrices} investors={data}
                           targetPrice={targetPrice} myAvgPrice={myAvgPrice}
-                          dividends={dividends}
+                          dividends={dividends} splits={splits}
+                          disclosures={disclosures}
                           onReady={registerSync} />
       ) : (
         <div className="text-xs text-gray-400 p-2 border border-gray-200 rounded">
@@ -731,16 +741,29 @@ function saveChartMode(m: ChartMode): void {
   try { localStorage.setItem(CHART_MODE_KEY, m); } catch { /* noop */ }
 }
 
+const DISC_TOGGLE_KEY = "price_chart_disclosures";
+function loadDiscToggle(): boolean {
+  try { return localStorage.getItem(DISC_TOGGLE_KEY) === "on"; }    // 기본 OFF
+  catch { return false; }
+}
+function saveDiscToggle(on: boolean): void {
+  try { localStorage.setItem(DISC_TOGGLE_KEY, on ? "on" : "off"); } catch { /* noop */ }
+}
+
 function PriceVolumeChart({
-  prices, investors, targetPrice, myAvgPrice, dividends, onReady,
+  prices, investors, targetPrice, myAvgPrice, dividends, splits, disclosures, onReady,
 }: {
   prices: PricePoint[]; investors: Investor[];
   targetPrice?: number; myAvgPrice?: number;
   dividends?: DividendEvent[];
+  splits?: SplitEvent[];
+  disclosures?: DartDisclosure[];
   onReady?: SyncRegistrar;
 }) {
   const [mode, setMode] = useState<ChartMode>(loadChartMode);
   const setModePersist = (m: ChartMode) => { setMode(m); saveChartMode(m); };
+  const [showDisc, setShowDisc] = useState<boolean>(loadDiscToggle);
+  const toggleDisc = () => { const v = !showDisc; setShowDisc(v); saveDiscToggle(v); };
   const N = prices.length;
   if (N < 2) return null;
 
@@ -815,9 +838,21 @@ function PriceVolumeChart({
             </span>
           );
         })()}
-        <span className="ml-auto inline-flex items-center gap-0.5 rounded border border-gray-200 p-0.5">
-          {togglePill("line",   "📈 라인")}
-          {togglePill("candle", "🕯 캔들")}
+        <span className="ml-auto inline-flex items-center gap-1">
+          {/* 공시 마커 표시 토글 */}
+          <button onClick={toggleDisc}
+                  title={showDisc ? "공시 마커 숨기기" : "공시 마커 보이기"}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium border ${
+                    showDisc
+                      ? "bg-orange-100 text-orange-700 border-orange-300"
+                      : "text-gray-400 border-gray-200 hover:bg-gray-100"
+                  }`}>
+            📋 공시 {showDisc ? "ON" : "OFF"}
+          </button>
+          <span className="inline-flex items-center gap-0.5 rounded border border-gray-200 p-0.5">
+            {togglePill("line",   "📈 라인")}
+            {togglePill("candle", "🕯 캔들")}
+          </span>
         </span>
       </div>
       <Suspense fallback={
@@ -827,7 +862,8 @@ function PriceVolumeChart({
       }>
         <CandleChartLight prices={prices} investors={investors} mode={mode}
                           targetPrice={targetPrice} myAvgPrice={myAvgPrice}
-                          dividends={dividends}
+                          dividends={dividends} splits={splits}
+                          disclosures={showDisc ? disclosures : []}
                           onReady={onReady} />
       </Suspense>
     </div>

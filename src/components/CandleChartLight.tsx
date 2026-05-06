@@ -18,7 +18,7 @@ import {
   type LogicalRange,
   type MouseEventParams,
 } from "lightweight-charts";
-import type { PricePoint, DividendEvent } from "../lib/api";
+import type { PricePoint, DividendEvent, SplitEvent, DartDisclosure } from "../lib/api";
 import type { Investor } from "../types";
 
 const UP_COLOR    = "#dc2626";  // 양봉 빨강
@@ -43,6 +43,8 @@ interface Props {
   targetPrice?: number;
   myAvgPrice?: number;
   dividends?: DividendEvent[];
+  splits?: SplitEvent[];
+  disclosures?: DartDisclosure[];
   mode: "line" | "candle";
   onReady?: (
     chart: IChartApi,
@@ -51,10 +53,35 @@ interface Props {
   ) => (() => void) | void;
 }
 
-const DIV_COLOR = "#0d9488";  // 배당락 marker — teal-600 (목표/평단과 색 구분)
+const DIV_COLOR = "#0d9488";   // 배당락 marker — teal-600
+const SPLIT_COLOR = "#a855f7"; // 액면분할 marker — purple-500
+const DART_COLOR = "#ea580c";  // DART 공시 marker — orange-600
+
+// 공시 제목에서 차트 라벨용 짧은 키워드 추출 (우선순위 순)
+//   매칭 안 되면 null → 호출자가 "N건" 카운트로 폴백
+function pickImportantKeyword(titles: string[]): string | null {
+  for (const t of titles) {
+    if (t.includes("잠정실적") || t.includes("영업(잠정)")) return "잠정실적";
+    if (t.includes("합병")) return "합병";
+    if (t.includes("주식분할") || t.includes("액면분할")) return "액면분할";
+    if (t.includes("주식병합") || t.includes("액면병합")) return "액면병합";
+    if (t.includes("유상증자")) return "유상증자";
+    if (t.includes("무상증자")) return "무상증자";
+    if (t.includes("감자")) return "감자";
+    if (t.includes("최대주주")) return "최대주주변경";
+    if (t.includes("자기주식 취득")) return "자사주매수";
+    if (t.includes("자기주식 처분")) return "자사주처분";
+    if (t.includes("자기주식 소각") || t.includes("주식 소각") || t.includes("주식소각")) return "주식소각";
+    if (t.includes("배당")) return "배당";
+    if (t.includes("공급계약") || t.includes("단일판매")) return "대형계약";
+    if (t.includes("주요사항")) return "주요사항";
+    if (t.includes("기업가치")) return "기업가치";
+  }
+  return null;
+}
 
 export function CandleChartLight({
-  prices, investors, targetPrice, myAvgPrice, dividends, mode, onReady,
+  prices, investors, targetPrice, myAvgPrice, dividends, splits, disclosures, mode, onReady,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -233,63 +260,111 @@ export function CandleChartLight({
       });
     }
 
-    // ─── 배당락 마커 (HTML overlay: 가는 1px 세로선 + 작은 화살촉 + 라벨) ──
-    // Yahoo dividend.date = ex-dividend date (배당락일) — 가격 시계열 범위 내만 표시
+    // ─── 이벤트 마커 데이터 (배당락 / 액면분할 / DART 공시) ──
+    const priceDateSet = new Set(prices.map(p => p.date));
     const divMap = new Map<string, number>();
-    if (dividends && dividends.length > 0) {
-      const priceDateSet = new Set(prices.map(p => p.date));
-      for (const d of dividends) {
-        if (priceDateSet.has(d.date)) divMap.set(d.date, d.amount);
-      }
+    if (dividends) for (const d of dividends) {
+      if (priceDateSet.has(d.date)) divMap.set(d.date, d.amount);
+    }
+    const splitMap = new Map<string, string>();
+    if (splits) for (const s of splits) {
+      if (priceDateSet.has(s.date)) splitMap.set(s.date, s.ratio);
+    }
+    // DART 공시 — 일자별 그룹, 중요 공시는 키워드 라벨로 요약
+    const dartMap = new Map<string, { count: number; titles: string[] }>();
+    if (disclosures) for (const d of disclosures) {
+      if (!priceDateSet.has(d.date)) continue;
+      const cur = dartMap.get(d.date);
+      if (cur) { cur.count++; cur.titles.push(d.title); }
+      else dartMap.set(d.date, { count: 1, titles: [d.title] });
     }
 
-    const renderDividendMarkers = () => {
+    // ─── 마커 렌더 (HTML overlay: 가는 세로선 + 화살촉 + 라벨) ──
+    const renderEventMarkers = () => {
       const layer = markersRef.current;
       if (!layer) return;
       layer.innerHTML = "";
-      if (divMap.size === 0) return;
-      for (const [date, amount] of divMap) {
-        const p = priceMap.get(date);
-        if (!p) continue;
-        const x = chart.timeScale().timeToCoordinate(date as Time);
-        if (x == null) continue;
-        const lowY = priceSeries.priceToCoordinate(p.low ?? p.close);
-        if (lowY == null) continue;
 
+      const renderBelow = (date: string, color: string, text: string, slot = 0) => {
+        const p = priceMap.get(date);
+        if (!p) return;
+        const x = chart.timeScale().timeToCoordinate(date as Time);
+        if (x == null) return;
+        const baseY = priceSeries.priceToCoordinate(p.low ?? p.close);
+        if (baseY == null) return;
         const wrap = document.createElement("div");
         wrap.style.cssText =
-          "position:absolute;left:" + x + "px;top:" + (lowY + 4) + "px;" +
-          "transform:translateX(-50%);pointer-events:none;z-index:4;" +
-          "display:flex;flex-direction:column;align-items:center;";
-
-        // 화살촉 (위 방향, 캔들 쪽을 가리킴)
+          `position:absolute;left:${x}px;top:${baseY + 4 + slot * 32}px;` +
+          `transform:translateX(-50%);pointer-events:none;z-index:4;` +
+          `display:flex;flex-direction:column;align-items:center;`;
         const head = document.createElement("div");
         head.style.cssText =
-          "width:0;height:0;" +
-          "border-left:3px solid transparent;border-right:3px solid transparent;" +
-          "border-bottom:5px solid " + DIV_COLOR + ";";
+          `width:0;height:0;border-left:3px solid transparent;` +
+          `border-right:3px solid transparent;border-bottom:5px solid ${color};`;
         wrap.appendChild(head);
-
-        // 가는 세로선 (1px × 22px)
         const line = document.createElement("div");
-        line.style.cssText =
-          "width:1px;height:22px;background:" + DIV_COLOR + ";";
+        line.style.cssText = `width:1px;height:18px;background:${color};`;
         wrap.appendChild(line);
-
-        // 라벨
         const label = document.createElement("div");
         label.style.cssText =
-          "background:#ffffff;border:1px solid " + DIV_COLOR + ";" +
-          "color:" + DIV_COLOR + ";" +
-          "border-radius:3px;padding:0 4px;font-size:9px;font-weight:600;" +
-          "white-space:nowrap;line-height:1.4;margin-top:1px;";
-        label.textContent = "배당락 " + Math.round(amount).toLocaleString() + "원";
+          `background:#ffffff;border:1px solid ${color};color:${color};` +
+          `border-radius:3px;padding:0 4px;font-size:9px;font-weight:600;` +
+          `white-space:nowrap;line-height:1.4;margin-top:1px;`;
+        label.textContent = text;
         wrap.appendChild(label);
-
         layer.appendChild(wrap);
+      };
+
+      const renderAbove = (date: string, color: string, text: string, slot = 0) => {
+        const p = priceMap.get(date);
+        if (!p) return;
+        const x = chart.timeScale().timeToCoordinate(date as Time);
+        if (x == null) return;
+        const baseY = priceSeries.priceToCoordinate(p.high ?? p.close);
+        if (baseY == null) return;
+        const totalH = 18 + 5 + 18;  // line + arrow + label
+        const wrap = document.createElement("div");
+        wrap.style.cssText =
+          `position:absolute;left:${x}px;top:${baseY - 4 - totalH - slot * 32}px;` +
+          `transform:translateX(-50%);pointer-events:none;z-index:4;` +
+          `display:flex;flex-direction:column;align-items:center;`;
+        const label = document.createElement("div");
+        label.style.cssText =
+          `background:#ffffff;border:1px solid ${color};color:${color};` +
+          `border-radius:3px;padding:0 4px;font-size:9px;font-weight:600;` +
+          `white-space:nowrap;line-height:1.4;margin-bottom:1px;`;
+        label.textContent = text;
+        wrap.appendChild(label);
+        const line = document.createElement("div");
+        line.style.cssText = `width:1px;height:18px;background:${color};`;
+        wrap.appendChild(line);
+        const head = document.createElement("div");
+        head.style.cssText =
+          `width:0;height:0;border-left:3px solid transparent;` +
+          `border-right:3px solid transparent;border-top:5px solid ${color};`;
+        wrap.appendChild(head);
+        layer.appendChild(wrap);
+      };
+
+      // 배당락 (아래)
+      for (const [date, amount] of divMap) {
+        renderBelow(date, DIV_COLOR, `배당락 ${Math.round(amount).toLocaleString()}원`);
+      }
+      // 액면분할 (위) — 같은 날 배당락과 겹쳐도 위/아래라 분리됨
+      for (const [date, ratio] of splitMap) {
+        renderAbove(date, SPLIT_COLOR, `분할 ${ratio}`);
+      }
+      // 공시 (위) — 중요 공시는 키워드 라벨 ("배당", "잠정실적" 등), 그 외는 카운트
+      for (const [date, info] of dartMap) {
+        const slot = splitMap.has(date) ? 1 : 0;
+        const keyword = pickImportantKeyword(info.titles);
+        const text = keyword
+          ? keyword + (info.count > 1 ? ` +${info.count - 1}` : "")
+          : `${info.count}건`;
+        renderAbove(date, DART_COLOR, text, slot);
       }
     };
-    const initMarkerTimer = window.setTimeout(renderDividendMarkers, 0);
+    const initMarkerTimer = window.setTimeout(renderEventMarkers, 0);
 
     // ─── 줌 상태 복원/저장 ──────────────────────────────────
     if (visibleRangeRef.current) {
@@ -299,11 +374,11 @@ export function CandleChartLight({
     }
     const rangeHandler = (range: LogicalRange | null) => {
       if (range) visibleRangeRef.current = range;
-      renderDividendMarkers();   // 줌/스크롤 시 위치 갱신
+      renderEventMarkers();   // 줌/스크롤 시 위치 갱신
     };
     chart.timeScale().subscribeVisibleLogicalRangeChange(rangeHandler);
 
-    const resizeObs = new ResizeObserver(() => renderDividendMarkers());
+    const resizeObs = new ResizeObserver(() => renderEventMarkers());
     if (containerRef.current) resizeObs.observe(containerRef.current);
 
     // ─── 데이터 lookup map (hover/sync 공용) ──────────────────
@@ -364,6 +439,22 @@ export function CandleChartLight({
       if (div !== undefined) {
         content += `<div><span class="text-gray-500">배당락 </span><span style="color:${DIV_COLOR}" class="font-bold">${Math.round(div).toLocaleString()}원</span></div>`;
       }
+      const sp = splitMap.get(String(time));
+      if (sp !== undefined) {
+        content += `<div><span class="text-gray-500">분할 </span><span style="color:${SPLIT_COLOR}" class="font-bold">${sp}</span></div>`;
+      }
+      const dart = dartMap.get(String(time));
+      if (dart !== undefined) {
+        const titles = (disclosures ?? [])
+          .filter(x => x.date === String(time))
+          .slice(0, 5)
+          .map(x => `<div style="color:${DART_COLOR}">📋 ${x.title}</div>`)
+          .join("");
+        content += titles;
+        if (dart.count > 5) {
+          content += `<div class="text-gray-400">… +${dart.count - 5}건</div>`;
+        }
+      }
       tooltip.innerHTML = content;
       tooltip.style.display = "block";
 
@@ -414,7 +505,7 @@ export function CandleChartLight({
       catch { /* chart already removed */ }
       chart.remove();
     };
-  }, [prices, investors, mode, targetPrice, myAvgPrice, dividends, onReady]);
+  }, [prices, investors, mode, targetPrice, myAvgPrice, dividends, splits, disclosures, onReady]);
 
   return (
     <div className="relative">

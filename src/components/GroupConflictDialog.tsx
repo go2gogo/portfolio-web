@@ -41,7 +41,8 @@ export function GroupConflictDialog({ conflicts, onResolved, onClose }: Props) {
   const allDecided = conflicts.every(c => {
     const s = strategies.get(c.ticker);
     if (!s) return false;
-    if ((s.mode === "groupA" || s.mode === "groupB") && !s.account) return false;
+    // 보유 그룹은 account === "" (빈 문자열) 이므로 typeof 체크 — falsy 함정 회피
+    if ((s.mode === "groupA" || s.mode === "groupB") && typeof s.account !== "string") return false;
     return true;
   });
 
@@ -54,7 +55,7 @@ export function GroupConflictDialog({ conflicts, onResolved, onClose }: Props) {
         if (s.mode === "skip") continue;
         if (s.mode === "merge") {
           await resolveConflictMerge(c.ticker);
-        } else if (s.account) {
+        } else if (typeof s.account === "string") {
           await resolveConflictUseGroup(c.ticker, s.account);
         }
       }

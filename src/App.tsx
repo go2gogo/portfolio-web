@@ -469,8 +469,13 @@ function Dashboard() {
                            text-center"
                onClick={e => e.stopPropagation()}>
             <h2 className="text-lg font-bold mb-1">☕ 후원해주셔서 감사합니다</h2>
-            <p className="text-xs text-gray-500 mb-4">
-              Cloudflare Worker 비용에 보태집니다
+            <p className="text-xs text-gray-600 leading-relaxed mb-4">
+              모인 후원금은 <b>Cloudflare Worker 운영비</b>,
+              <br />그리고 <b>꾸준한 기능 개발·유지보수</b>에 사용됩니다.
+              <br />
+              <span className="text-gray-400">
+                (개발자가 퇴근 후 시간을 쪼개 만들고 있어요 🙏)
+              </span>
             </p>
             <div className="bg-[#FEE500] rounded-lg p-4 inline-block mb-3">
               <img src={QR_IMG_URL} alt="카카오페이 QR" width={200} height={200}

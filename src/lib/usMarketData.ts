@@ -15,7 +15,12 @@ export interface Pair {
 
 export const US_PAIRS: Pair[] = [
   // Tier 0: 핵심 대시보드 — 데스크탑 T0_GROUPS 순서와 일치 (모바일 단일 컬럼 같은 순서로 노출)
-  // 행 1 — 환율 + 매크로 + 외국인 투심 + 공포
+  // 행 1 — 한국 지수 (맨 위)
+  { symbol: "^KS11",    name: "KOSPI",       desc: "코스피 종합 지수", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "^KS200",   name: "KOSPI 200",   desc: "코스피 200 지수 — 시총 상위", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "^KQ11",    name: "KOSDAQ",      desc: "코스닥 종합 지수", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "^KQ100",   name: "KOSDAQ 100",  desc: "코스닥 100 지수 — 시총 상위", tier: "T0", sector: "dashboard", direction: "direct" },
+  // 행 2 — 환율 + 매크로 + 외국인 투심 + 공포
   { symbol: "KRW=X",    name: "USD/KRW",     desc: "원달러 환율 — 수출주·외국인 수급", tier: "T0", sector: "dashboard", direction: "inverse" },
   { symbol: "DX-Y.NYB", name: "달러 인덱스",  desc: "DXY — 6개 통화 대비 달러 강도", tier: "T0", sector: "dashboard", direction: "inverse" },
   { symbol: "JPY=X",    name: "엔/달러",     desc: "USD/JPY — 한일 수출 경쟁력 (엔 약세 = 한국 불리)", tier: "T0", sector: "dashboard", direction: "neutral" },
@@ -40,11 +45,6 @@ export const US_PAIRS: Pair[] = [
   { symbol: "SOX=F",    name: "필반 선물",    desc: "PHLX 반도체 선물 — 야간 흐름", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "NVDA",     name: "NVIDIA",      desc: "AI 칩 대장 — HBM 수요", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "TSM",      name: "TSMC",        desc: "파운드리 1위 — 업황 대표", tier: "T0", sector: "dashboard", direction: "direct" },
-  // 행 5 — 한국 지수
-  { symbol: "^KS11",    name: "KOSPI",       desc: "코스피 종합 지수", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "^KS200",   name: "KOSPI 200",   desc: "코스피 200 지수 — 시총 상위", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "^KQ11",    name: "KOSDAQ",      desc: "코스닥 종합 지수", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "^KQ100",   name: "KOSDAQ 100",  desc: "코스닥 100 지수 — 시총 상위", tier: "T0", sector: "dashboard", direction: "direct" },
   // 행 6 — 한국 섹터 KODEX ETF (대표 1개씩, .KS suffix → Yahoo 통해 일관 fetch)
   { symbol: "091160.KS", name: "KODEX 반도체",     desc: "한국 반도체 ETF — 삼성·하이닉스 대표", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "091180.KS", name: "KODEX 자동차",     desc: "현대·기아 자동차 ETF", tier: "T0", sector: "dashboard", direction: "direct" },

@@ -66,11 +66,11 @@ export function UsMarketTab() {
   const tier0 = US_PAIRS.filter(p => p.tier === "T0");
   // T0 그룹 — 비슷한 지수끼리 묶어서 줄별로 표시
   const T0_GROUPS: string[][] = [
+    ["^KS11", "^KS200", "^KQ11", "^KQ100"],                       // 한국 지수 (맨 위)
     ["KRW=X", "DX-Y.NYB", "JPY=X", "^TNX", "EWY", "^VIX"],     // 환율 + 매크로 + 외국인 투심 + 공포
-    ["GC=F", "SI=F", "HG=F", "CL=F", "NG=F", "BTC-USD"],        // 원자재 (금/은/구리/원유/천연가스) + 비트코인
+    ["GC=F", "SI=F", "HG=F", "CL=F", "NG=F", "BTC-USD"],        // 원자재 + 비트코인
     ["^IXIC", "NQ=F", "^N225", "^GSPC", "ES=F"],                // 미국 지수 + 야간 선물 + 닛케이
     ["^SOX", "SOX=F", "NVDA", "TSM"],                            // 반도체
-    ["^KS11", "^KS200", "^KQ11", "^KQ100"],                       // 한국 지수
     ["091160.KS", "091180.KS", "305720.KS", "244580.KS",
      "091170.KS", "117700.KS", "266420.KS", "445290.KS"],         // 한국 KODEX 섹터 ETF (마지막)
   ];

@@ -203,15 +203,14 @@ export function MobileSimpleView() {
   const groupPriceMap = new Map((groupPrices ?? []).map(p => [p.ticker, p]));
 
   // 비거래일 감지 (PC 와 동일) — 첫 종목 high 없으면 비거래일
-  const groupNonTrading = (groupPrices?.length ?? 0) > 0 && !groupPrices?.[0]?.high;
   // 비거래일에만 일봉 차트 fetch — 카드 가격 박스 sparkline (PC 와 캐시 키 공유)
   const groupChartQs = useQueries({
     queries: groupTickers.map(t => ({
       queryKey: ["kr-price-history", t, "3mo"],
       queryFn: () => fetchKrPriceHistory(t, "3mo"),
-      staleTime: 60 * 60 * 1000,
+      staleTime: 60 * 60 * 1000,    // 1시간 캐시 (장중 fetch 부담 최소화)
       refetchOnWindowFocus: false,
-      enabled: activeTab !== US_KEY && groupNonTrading,
+      enabled: activeTab !== US_KEY,  // 장중에도 fetch — AuxIndicators 의 3개월/변동성 표시
     })),
   });
   const groupChartMap = new Map(
@@ -382,7 +381,7 @@ export function MobileSimpleView() {
     <div className="min-h-screen bg-gray-50"
          onTouchStart={handleTouchStart}
          onTouchEnd={handleTouchEnd}>
-      <header className="sticky top-0 z-10 bg-white border-b border-gray-200
+      <header className="sticky top-0 z-30 bg-white border-b border-gray-200
                           px-3 py-2 flex items-center gap-1">
         <h1 className="text-sm font-bold text-gray-800 shrink-0">📈</h1>
         <RefreshIndicator dataUpdatedAt={lastAt}
@@ -423,7 +422,7 @@ export function MobileSimpleView() {
       </header>
 
       {/* ─── 그룹 탭 (가로 스크롤, 작은 폰트) — 길게 누르기 = 액션 시트 ─── */}
-      <nav className="sticky top-[44px] z-10 bg-white border-b border-gray-200
+      <nav className="sticky top-[44px] z-30 bg-white border-b border-gray-200
                        px-2 py-1 flex gap-1 overflow-x-auto whitespace-nowrap">
         {groupTabs.map(t => {
           const active = t.key === activeTab;
@@ -516,12 +515,13 @@ export function MobileSimpleView() {
                                }} />
             ))}
           </div>
-          {/* 합계 — 화면 하단 fixed (항상 보임) */}
+          {/* 합계 — 화면 하단 fixed (TotalRow 자체에 bg/border 있음) */}
           {groupHoldings.length > 0 && (
             <div className="fixed bottom-0 left-0 right-0 z-20
-                             bg-white border-t border-gray-300 shadow-lg
-                             px-3 py-2 flex justify-center">
-              <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
+                             pb-2 px-3 flex justify-center pointer-events-none">
+              <div className="pointer-events-auto">
+                <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
+              </div>
             </div>
           )}
         </>

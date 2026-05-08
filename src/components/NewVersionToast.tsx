@@ -47,17 +47,23 @@ export function NewVersionToast() {
   const [latestCommit, setLatestCommit] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log("[new-version] mount, current hash:", __COMMIT_HASH__);
     let stop = false;
     const check = async () => {
       const latest = await fetchLatestCommit();
       if (stop) return;
       if (latest && latest !== __COMMIT_HASH__) {
+        console.log("[new-version] DIFF detected — toast will show:",
+                    { current: __COMMIT_HASH__, latest });
         setLatestCommit(latest);
       }
     };
     void check();
     const id = setInterval(check, POLL_MS);
-    const onFocus = () => void check();
+    const onFocus = () => {
+      console.log("[new-version] focus/visibility — re-check");
+      void check();
+    };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
     return () => {

@@ -69,7 +69,10 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // 프록시 응답은 캐시 — 짧은 TTL
+        // version.json 은 precache 에서 제외 — 항상 네트워크에서 직접 fetch 해야
+        // 새 버전 토스트가 동작 (cache-first 로 옛 hash 응답하면 안 됨)
+        globIgnores: ["**/version.json"],
+        // 프록시 응답 + version.json 은 NetworkFirst (짧은 TTL)
         runtimeCaching: [
           {
             urlPattern: /workers\.dev\//,
@@ -79,6 +82,10 @@ export default defineConfig({
               expiration: { maxAgeSeconds: 60, maxEntries: 100 },
               networkTimeoutSeconds: 5,
             },
+          },
+          {
+            urlPattern: /version\.json/,
+            handler: "NetworkOnly",
           },
         ],
       },

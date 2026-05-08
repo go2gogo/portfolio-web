@@ -11,10 +11,16 @@ async function fetchLatestCommit(): Promise<string | null> {
     // 캐시 버스터 — SW/HTTP 캐시 우회
     const url = `${import.meta.env.BASE_URL}version.json?cb=${Date.now()}`;
     const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn("[new-version] fetch failed:", res.status, url);
+      return null;
+    }
     const json = await res.json() as { commit?: string };
-    return typeof json.commit === "string" ? json.commit : null;
-  } catch {
+    const latest = typeof json.commit === "string" ? json.commit : null;
+    console.debug("[new-version] check:", { current: __COMMIT_HASH__, latest });
+    return latest;
+  } catch (e) {
+    console.warn("[new-version] fetch error:", e);
     return null;
   }
 }

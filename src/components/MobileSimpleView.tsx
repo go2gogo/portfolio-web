@@ -7,7 +7,7 @@ import {
 import { SortSelector, makeSortHandlers } from "./SortSelector";
 import { AuxBatchToggle } from "./AuxBatchToggle";
 import {
-  fetchYahooBatch, fetchTossPrices, fetchNaverInfo, fetchWarning,
+  fetchYahooBatch, fetchTossPrices, fetchNaverInfo, fetchWarning, fetchInvestorHistory,
   fetchYahooChart, fetchKrPriceHistory,
 } from "../lib/api";
 import {
@@ -238,6 +238,19 @@ export function MobileSimpleView() {
   });
   const warningMap = new Map(
     groupTickers.map((t, i) => [t, warningQs[i]?.data ?? ""])
+  );
+
+  // 종목별 60일 수급 — AuxIndicators (외국인/기관/연기금 60일 누적) 용
+  const investorHistoryQs = useQueries({
+    queries: groupTickers.map(t => ({
+      queryKey: ["m-investor-history", t],
+      queryFn: () => fetchInvestorHistory(t, 60),
+      enabled: activeTab !== US_KEY,
+      refetchInterval: REFRESH_MS,
+    })),
+  });
+  const investorHistoryMap = new Map(
+    groupTickers.map((t, i) => [t, investorHistoryQs[i]?.data ?? null])
   );
 
   // 종목별 sector + consensus (Naver) — 그룹 탭에서만 fetch (캐시)
@@ -481,6 +494,7 @@ export function MobileSimpleView() {
                                sector={naverInfos.data?.get(s.ticker)?.sector}
                                warning={warningMap.get(s.ticker) || undefined}
                                chart={groupChartMap.get(s.ticker)}
+                               investorHistory={investorHistoryMap.get(s.ticker)}
                                consensus={naverInfos.data?.get(s.ticker)?.consensus}
                                onOpenValuation={setValuationTicker}
                                onEdit={st => guardedAction(() => setEditing(st))}

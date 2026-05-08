@@ -23,10 +23,13 @@ interface Props {
   investorHistory?: Investor[] | null;
   isTradingDay: boolean;
   textSize?: "xs" | "10";    // PC: xs (11px), 모바일: 10 (10px)
+  defaultOpen?: boolean;     // true 면 항상 펼친 상태로 시작 (관심종목 등 우측 패널 빈 경우)
 }
 
-export function AuxIndicators({ chart, investorHistory, isTradingDay, textSize = "xs" }: Props) {
-  const [expanded, setExpanded] = useState(!isTradingDay);
+export function AuxIndicators({
+  chart, investorHistory, isTradingDay, textSize = "xs", defaultOpen,
+}: Props) {
+  const [expanded, setExpanded] = useState(defaultOpen ?? !isTradingDay);
   const sizeCls = textSize === "10" ? "text-[10px]" : "text-[11px]";
 
   // 외부 일괄 토글 이벤트 — 닫기 / 열기

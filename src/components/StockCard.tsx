@@ -493,11 +493,6 @@ export function StockCard({
                           ${priceColorCls}`}>
               {sleeping && <span className="text-[10px] mr-1 opacity-70">z<sup>z</sup><sup>z</sup></span>}
               {stock.name}
-              {stock.shares > 0 && (
-                <span className="ml-1 text-xs font-bold">
-                  ({stock.shares.toLocaleString()}주)
-                </span>
-              )}
             </button>
           </Tooltip>
           {/* 수급 신호 — 외인+기관 동반매수 / 개인 떠받치기 / 외인비율 추세 */}
@@ -701,6 +696,22 @@ export function StockCard({
                        className="absolute inset-0 w-full h-full opacity-10
                                   pointer-events-none" />
           )}
+          {/* 보유주수 + 거래량 — 우상단 박스 (값만, 라벨 X, 배경 투명) */}
+          {(stock.shares > 0 || price.volume > 0) && (
+            <div className="absolute top-1 right-1 z-20 border border-gray-200
+                            rounded px-1.5 py-0.5 text-[10px] leading-tight">
+              {stock.shares > 0 && (
+                <div className="font-bold text-gray-900">
+                  {stock.shares.toLocaleString()}주
+                </div>
+              )}
+              {price.volume > 0 && (
+                <div className="text-gray-900">
+                  {formatVolume(price.volume)}
+                </div>
+              )}
+            </div>
+          )}
           {(() => {
             // 가격 행들을 배열로 만들고 목표를 가격 비교에 따라 적절한 위치에 삽입
             const rowHigh = price.high && price.high > 0 ? (() => {
@@ -720,23 +731,23 @@ export function StockCard({
             })() : null;
 
             const rowCur = (
-              <div key="cur" className="relative z-10 flex items-baseline gap-2">
-                {tick.arrow && (
-                  <span className={`text-xl font-bold leading-tight
-                                    ${tick.dir === "up" ? "text-rose-600"
-                                      : tick.dir === "down" ? "text-blue-600"
-                                      : "text-gray-400"}`}>
-                    {tick.arrow.trim()}
+              <div key="cur" className="relative z-10">
+                <div className="flex items-baseline gap-2">
+                  {tick.arrow && (
+                    <span className={`text-xl font-bold leading-tight
+                                      ${tick.dir === "up" ? "text-rose-600"
+                                        : tick.dir === "down" ? "text-blue-600"
+                                        : "text-gray-400"}`}>
+                      {tick.arrow.trim()}
+                    </span>
+                  )}
+                  <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
+                    {price.price.toLocaleString()}원
                   </span>
-                )}
-                <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
-                  {price.price.toLocaleString()}원
-                </span>
-                {price.volume > 0 && (
-                  <span className="text-xs text-gray-400">
-                    ({formatVolume(price.volume)})
-                  </span>
-                )}
+                </div>
+                <div className={`text-xs font-bold pl-6 ${signColor(dayDiff)}`}>
+                  {formatSigned(dayDiff)} ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+                </div>
               </div>
             );
 
@@ -757,7 +768,6 @@ export function StockCard({
 
             const rowTarget = consensus?.target && consensus.target > 0 ? (() => {
               const t = consensus.target;
-              // 기준 - 현재가 → 목표가 위면 + (도달까지 거리), 아래면 - (이미 초과)
               const tDiff = t - price.price;
               const tPct = price.price > 0 ? (tDiff / price.price) * 100 : 0;
               return (
@@ -772,18 +782,18 @@ export function StockCard({
               );
             })() : null;
 
-            // 목표를 가격 비교에 따라 위치 결정
+            // 목표 위치 — 가격 비교에 따라 (좌측 가격 블록 안에 배치)
             let order: (React.ReactElement | null)[];
             if (rowTarget && consensus?.target) {
               const t = consensus.target;
               if (price.high && t > price.high) {
-                order = [rowTarget, rowHigh, rowCur, rowLow];        // 목표 > 고
+                order = [rowTarget, rowHigh, rowCur, rowLow];
               } else if (t > price.price) {
-                order = [rowHigh, rowTarget, rowCur, rowLow];        // 고 ≥ 목표 > 현재가
+                order = [rowHigh, rowTarget, rowCur, rowLow];
               } else if (price.low && t > price.low) {
-                order = [rowHigh, rowCur, rowTarget, rowLow];        // 현재가 ≥ 목표 > 저
+                order = [rowHigh, rowCur, rowTarget, rowLow];
               } else {
-                order = [rowHigh, rowCur, rowLow, rowTarget];        // 목표 ≤ 저
+                order = [rowHigh, rowCur, rowLow, rowTarget];
               }
             } else {
               order = [rowHigh, rowCur, rowLow];
@@ -793,56 +803,50 @@ export function StockCard({
         </div>
         </Tooltip>
 
-        {/* 통계 박스 — 매수/어제/수익 (3/10) */}
+        {/* 통계 박스 — 피크/투자원금/보유합계/전체수익/어제대비 (3/10) */}
         <div className="relative border border-gray-200 rounded-md bg-gray-50/60
                         px-2 py-1 basis-[40%] min-w-0 space-y-0.5
                         flex flex-col justify-start">
 
-        {/* 보유: 매수 + 피크 */}
-        {hasPosition && (
-          <div className="text-xs flex flex-wrap items-baseline gap-x-4">
-            <span>
-              <span className="text-gray-500">매수 </span>
-              <span className="text-gray-700 font-medium">
-                {Math.round(stock.avg_price).toLocaleString()}원
-              </span>
-            </span>
-            {peak && peak > price.price && (
-              <span className="text-gray-700 font-medium">
-                <span className="text-gray-500">피크 </span>
-                {peak.toLocaleString()}원{" "}
-                (<span className={`rounded px-0.5
-                                   ${isPeakDrop ? "bg-blue-600 text-white font-bold" : ""}`}>
-                  {peakPct.toFixed(2)}%
-                </span>)
-              </span>
-            )}
+        {/* 피크 (보유만, 피크가 현재가보다 위) — 보유 기준 총액 */}
+        {hasPosition && peak && peak > price.price && (
+          <div className="text-xs">
+            <span className="text-gray-500">피크 </span>
+            <span className="text-gray-700 font-medium">
+              {Math.round(peak * stock.shares).toLocaleString()}원
+            </span>{" "}
+            (<span className={`rounded px-0.5
+                               ${isPeakDrop ? "bg-blue-600 text-white font-bold" : ""}`}>
+              {peakPct.toFixed(2)}%
+            </span>)
           </div>
         )}
 
-        {/* 어제보다 — 변동 0이면 행 자체 숨김; 1주당 + % 강조 */}
-        {dayDiff !== 0 && (
+        {/* 원금 (보유만) — shares × avg_price */}
+        {hasPosition && (
           <div className="text-xs">
-            <span className="text-gray-500">어제보다 </span>
-            <span className={`font-bold text-base ${signColor(dayDiff)}`}>
-              {formatSigned(dayDiff)}
-            </span>
-            {stock.shares > 0 && (
-              <span className={signColor(dayDiff)}>
-                {" / "}{formatSigned(dayDiff * stock.shares)}
-              </span>
-            )}{" "}
-            <span className={`font-bold text-base ${signColor(dayDiff)}`}>
-              ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+            <span className="text-gray-500">원금 </span>
+            <span className="text-gray-700">
+              {Math.round(stock.avg_price * stock.shares).toLocaleString()}원
             </span>
           </div>
         )}
 
-        {/* 전체수익 (보유만) — 금액 일반, %만 bold (손절 -9% 이하 시 % 배경 강조) */}
+        {/* 현재 (보유만) — shares × current_price = 현재 평가금액 */}
         {hasPosition && (
           <div className="text-xs">
-            <span className="text-gray-500">전체수익 </span>
-            <span className={signColor(pnl)}>
+            <span className="text-gray-500">현재 </span>
+            <span className={`font-bold ${signColor(pnl)}`}>
+              {Math.round(price.price * stock.shares).toLocaleString()}원
+            </span>
+          </div>
+        )}
+
+        {/* 전체 — 금액만 크게 / % 는 원래 / 손절 시 % 배경 강조 */}
+        {hasPosition && (
+          <div className="text-xs">
+            <span className="text-gray-500">전체 </span>
+            <span className={`text-base font-bold ${signColor(pnl)}`}>
               {formatSigned(pnl)}
             </span>{" "}
             <span className={signColor(pnl)}>(</span>
@@ -855,10 +859,24 @@ export function StockCard({
           </div>
         )}
 
+        {/* 오늘 (보유만) — 보유분 어제대비 변동 (오늘 움직인 금액) */}
+        {hasPosition && (
+          <div className="text-xs">
+            <span className="text-gray-500">오늘 </span>
+            <span className={`font-bold ${signColor(dayDiff)}`}>
+              {formatSigned(dayDiff * stock.shares)}
+            </span>{" "}
+            <span className={`font-bold ${signColor(dayDiff)}`}>
+              ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+            </span>
+          </div>
+        )}
+
         {/* ─── 보조 지표 (3개월 / 변동성 / 외인비율 추세) ─────
             거래일엔 접혀있고 비거래일엔 펼쳐있음. 클릭으로 토글 */}
         <AuxIndicators chart={chart} investorHistory={investorHistory}
-                       isTradingDay={!!price.high} />
+                       isTradingDay={!!price.high}
+                       defaultOpen={!hasPosition} />
 
         </div>
 

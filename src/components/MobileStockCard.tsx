@@ -1,4 +1,4 @@
-import type { Stock, Price, Consensus } from "../types";
+import type { Stock, Price, Consensus, Investor } from "../types";
 import { formatSigned, signColor, formatVolume, isHoldingSleeping } from "../lib/format";
 import { getDimSleepingEnabled } from "../lib/proxyConfig";
 import { Sparkline } from "./Sparkline";
@@ -15,6 +15,7 @@ interface Props {
   sector?: string;
   warning?: string;
   chart?: number[];           // 비거래일 sparkline 용 일봉 종가 시계열
+  investorHistory?: Investor[] | null;   // 60일 수급 (AuxIndicators 외국인/기관/연기금)
   consensus?: Consensus | null; // 네이버 컨센서스 (목표가 + 점수)
   onOpenValuation?: (ticker: string) => void;  // 📊 기업가치 모달
   onEdit?: (stock: Stock) => void;
@@ -70,7 +71,7 @@ function openTossStock(ticker: string) {
 }
 
 export function MobileStockCard({
-  stock, price, peak, sector, warning, chart, consensus, onOpenValuation, onEdit, onDelete,
+  stock, price, peak, sector, warning, chart, investorHistory, consensus, onOpenValuation, onEdit, onDelete,
 }: Props) {
   if (!price) {
     return (
@@ -164,11 +165,6 @@ export function MobileStockCard({
                                 ${priceColorCls}`}>
               {sleeping && <span className="text-[10px] mr-0.5 opacity-70">zZ</span>}
               {stock.name}
-              {stock.shares > 0 && (
-                <span className="ml-1 text-sm font-bold">
-                  ({stock.shares.toLocaleString()}주)
-                </span>
-              )}
             </button>
           </Tooltip>
         </div>
@@ -282,6 +278,22 @@ export function MobileStockCard({
                      className="absolute inset-0 w-full h-full opacity-10
                                 pointer-events-none" />
         )}
+        {/* 보유주수 + 거래량 — 우상단 박스 (값만, 라벨 X, 배경 투명) */}
+        {(stock.shares > 0 || price.volume > 0) && (
+          <div className="absolute top-1 right-1 z-20 border border-gray-200
+                          rounded px-1.5 py-0.5 text-[10px] leading-tight">
+            {stock.shares > 0 && (
+              <div className="font-bold text-gray-900">
+                {stock.shares.toLocaleString()}주
+              </div>
+            )}
+            {price.volume > 0 && (
+              <div className="text-gray-900">
+                {formatVolume(price.volume)}
+              </div>
+            )}
+          </div>
+        )}
         {(() => {
           // 가격 행 + 목표 가격 비교 위치 동적 삽입 (PC 동일)
           const rowHigh = price.high && price.high > 0 ? (() => {
@@ -300,15 +312,15 @@ export function MobileStockCard({
           })() : null;
 
           const rowCur = (
-            <div key="cur" className="relative flex items-baseline gap-1">
-              <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
-                {price.price.toLocaleString()}원
-              </span>
-              {price.volume > 0 && (
-                <span className="text-xs text-gray-400">
-                  ({formatVolume(price.volume)})
+            <div key="cur" className="relative">
+              <div className="flex items-baseline gap-1">
+                <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
+                  {price.price.toLocaleString()}원
                 </span>
-              )}
+              </div>
+              <div className={`text-[10px] font-bold pl-2 ${signColor(dayDiff)}`}>
+                {formatSigned(dayDiff)} ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+              </div>
             </div>
           );
 
@@ -363,49 +375,51 @@ export function MobileStockCard({
       </div>
       </Tooltip>
 
-      {/* 우측 — 통계 박스 (50%) */}
+      {/* 우측 — 통계 박스 (50%) — PC 와 동일 구조: 피크/원금/현재/전체/오늘 */}
       <div className="relative basis-1/2 min-w-0 border border-gray-200 rounded
                        bg-gray-50/60 px-1.5 py-1 space-y-0.5
                        flex flex-col justify-start">
-        {hasPosition && (
-          <>
-            <div className="text-[10px]">
-              <span className="text-gray-500">매수 </span>
-              <span className="text-gray-700 font-medium">
-                {Math.round(stock.avg_price).toLocaleString()}원
-              </span>
-            </div>
-            {peak && peak > price.price && (
-              <div className="text-[10px] text-gray-700 font-medium">
-                <span className="text-gray-500">피크 </span>
-                {peak.toLocaleString()}원{" "}
-                (<span className={`rounded px-0.5
-                                   ${isPeakDrop ? "bg-blue-600 text-white font-bold" : ""}`}>
-                  {peakPct.toFixed(2)}%
-                </span>)
-              </div>
-            )}
-          </>
+        {/* 피크 (보유만, 피크 > 현재가) — 보유 총액 기준 */}
+        {hasPosition && peak && peak > price.price && (
+          <div className="text-[10px]">
+            <span className="text-gray-500">피크 </span>
+            <span className="text-gray-700 font-medium">
+              {Math.round(peak * stock.shares).toLocaleString()}원
+            </span>{" "}
+            (<span className={`rounded px-0.5
+                               ${isPeakDrop ? "bg-blue-600 text-white font-bold" : ""}`}>
+              {peakPct.toFixed(2)}%
+            </span>)
+          </div>
         )}
 
-        {/* 어제보다 — 1주 금액 + % (총금액 제외) */}
-        {dayDiff !== 0 && (
+        {/* 원금 (보유만) */}
+        {hasPosition && (
           <div className="text-[10px]">
-            <span className="text-gray-500">어제보다 </span>
-            <span className={`font-bold text-sm ${signColor(dayDiff)}`}>
-              {formatSigned(dayDiff)}
-            </span>{" "}
-            <span className={`font-bold text-base ${signColor(dayDiff)}`}>
-              ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+            <span className="text-gray-500">원금 </span>
+            <span className="text-gray-700">
+              {Math.round(stock.avg_price * stock.shares).toLocaleString()}원
             </span>
           </div>
         )}
 
-        {/* 전체수익 — 자연 흐름 (PC 동일) */}
+        {/* 현재 (보유만) — shares × current_price */}
         {hasPosition && (
           <div className="text-[10px]">
-            <span className="text-gray-500">전체수익 </span>
-            <span className={signColor(pnl)}>{formatSigned(pnl)}</span>{" "}
+            <span className="text-gray-500">현재 </span>
+            <span className={`font-bold ${signColor(pnl)}`}>
+              {Math.round(price.price * stock.shares).toLocaleString()}원
+            </span>
+          </div>
+        )}
+
+        {/* 전체 — 금액 크게, % 는 원래 (손절 시 % 배경 강조) */}
+        {hasPosition && (
+          <div className="text-[10px]">
+            <span className="text-gray-500">전체 </span>
+            <span className={`text-sm font-bold ${signColor(pnl)}`}>
+              {formatSigned(pnl)}
+            </span>{" "}
             <span className={signColor(pnl)}>(</span>
             <span className={`font-bold rounded px-0.5
                               ${isStop ? "bg-rose-600 text-white"
@@ -416,8 +430,23 @@ export function MobileStockCard({
           </div>
         )}
 
+        {/* 오늘 (보유만) — dayDiff × shares */}
+        {hasPosition && (
+          <div className="text-[10px]">
+            <span className="text-gray-500">오늘 </span>
+            <span className={`font-bold ${signColor(dayDiff)}`}>
+              {formatSigned(dayDiff * stock.shares)}
+            </span>{" "}
+            <span className={`font-bold ${signColor(dayDiff)}`}>
+              ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
+            </span>
+          </div>
+        )}
+
         {/* ─── 보조 지표 — 우측 하단 네모 블럭 ──── */}
-        <AuxIndicators chart={chart} isTradingDay={!!price.high} textSize="10" />
+        <AuxIndicators chart={chart} investorHistory={investorHistory}
+                       isTradingDay={!!price.high} textSize="10"
+                       defaultOpen={!hasPosition} />
 
       </div>
       </article>

@@ -3,16 +3,22 @@
 // — Drive appdata 스코프만 (이메일·프로필 미요청)
 // — Token 은 localStorage 에 1시간 캐시 (만료되면 다시 redirect)
 
-const CLIENT_ID = "329003207663-t43ejjbg1plt0l5u2kftpa41ofkq7e1o.apps.googleusercontent.com";
+
+const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string;
+
+if (!CLIENT_ID) {
+  throw new Error("VITE_GOOGLE_CLIENT_ID is not configured.");
+}
+
 const SCOPE = "https://www.googleapis.com/auth/drive.appdata";
-const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+//const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const STATE_VALUE = "drive_auth_v1";
 
 // localStorage keys
 const TOKEN_KEY = "gdrive_token_cache";
 const WAS_SIGNED_IN_KEY = "gdrive_was_signed_in";
-const PRE_AUTH_PATH_KEY = "gdrive_pre_auth_path";
+//const PRE_AUTH_PATH_KEY = "gdrive_pre_auth_path";
 
 interface CachedToken { token: string; expiresAt: number; }
 
@@ -54,15 +60,8 @@ function clearToken(): void {
 }
 
 // redirect_uri — Google Cloud Console 에 등록된 값과 정확히 일치해야 함
-function getRedirectUri(): string {
-  // gh-pages: https://hanjungwoo3.github.io/portfolio-web/
-  // local:    http://localhost:5173/
-  // pathname 끝에 슬래시 강제 (CSC 등록 형식 일치)
-  const path = window.location.pathname.endsWith("/")
-    ? window.location.pathname
-    : window.location.pathname + "/";
-  return window.location.origin + path;
-}
+// 삭제
+
 
 // 페이지 로드 시 즉시 — 1) 캐시 복원, 2) URL fragment 의 token 처리
 loadCachedToken();
@@ -70,23 +69,40 @@ handleAuthRedirect();
 
 // 로그인 — 전체 페이지가 google 로 redirect (사용자 클릭 후)
 // Promise 안 반환 — redirect 후 다시 돌아올 때 token 처리됨
-export function signIn(): void {
-  // 로그인 후 돌아갈 path 저장 (예: 모달 다시 열림 등)
-  try {
-    localStorage.setItem(PRE_AUTH_PATH_KEY, window.location.pathname + window.location.search);
-  } catch { /* noop */ }
 
-  const params = new URLSearchParams({
-    client_id: CLIENT_ID,
-    redirect_uri: getRedirectUri(),
-    response_type: "token",
-    scope: SCOPE,
-    state: STATE_VALUE,
-    prompt: "consent",
-    include_granted_scopes: "true",
+export function signIn(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const googleApi = window.google;
+
+    if (!googleApi?.accounts?.oauth2) {
+      reject(new Error("Google Identity Services script is not loaded."));
+      return;
+    }
+
+    const tokenClient = googleApi.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPE,
+      prompt: "consent",
+      callback: (response: {
+        access_token?: string;
+        expires_in?: number;
+        error?: string;
+        error_description?: string;
+      }) => {
+        if (response.error || !response.access_token) {
+          reject(new Error(response.error_description || response.error || "Google sign-in failed."));
+          return;
+        }
+
+        saveToken(response.access_token, response.expires_in ?? 3600);
+        resolve();
+      },
+    });
+
+    tokenClient.requestAccessToken();
   });
-  window.location.href = `${AUTH_URL}?${params}`;
 }
+
 
 // URL fragment 에서 token 추출 — 페이지 로드 시 자동 호출
 export function handleAuthRedirect(): boolean {

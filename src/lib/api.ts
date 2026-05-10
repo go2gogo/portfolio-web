@@ -715,10 +715,12 @@ export async function fetchYahooQuote(symbol: string, name: string): Promise<UsI
     // 색상용 prevClose 보존 — 비거래일 보정 전 원래 값
     const prevClose = prev;
 
-    // 비거래일 보정 — 휴장(CLOSED) + tradeDate ≠ 오늘 → prev=price (% 0 처리)
-    // KR / US / 글로벌 모두 적용 — 주말·공휴일엔 가격 변화 없음.
-    // (정규장·시간외 PRE/POST/POSTPOST 는 영향 없음 — state 가 CLOSED 가 아니므로)
-    if (state === "CLOSED" && tradeDate) {
+    // 비거래일 보정 — KR(.KS/.KQ/^KS*/^KQ*) 만 적용.
+    // 한국 종목/지수는 장 마감 후 새 가격이 안 들어오면 그냥 % 0 으로 가리는 게 자연스러움.
+    // 미국/글로벌/선물/원자재/환율 등은 선행지수 의미가 있어 마지막 정규장 종가 기준 % 그대로 유지.
+    // (저유동성 미국 ETF 의 경우 정규장 중에도 tradeDate 가 어제로 잡힐 수 있어 KR 만 보정)
+    const isKr = /\.K[SQ]$|^\^K[SQ]/.test(symbol);
+    if (isKr && state === "CLOSED" && tradeDate) {
       const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
       if (tradeDate !== todayKst) {
         prev = price;  // 비거래일 → 어제대비 0

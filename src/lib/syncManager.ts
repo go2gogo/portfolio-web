@@ -50,10 +50,14 @@ function getLastSyncedTs(): string | null {
 // 로그인 + 모드 OFF 로 시작 (자동 sync 는 사용자가 명시적으로 ON 해야 활성)
 // — signIn() 은 redirect 라 호출 후 페이지가 google 로 이동, 돌아오면 token 저장됨
 // — 사전 setSyncMode("off") 해두면 redirect 후 이미 OFF 상태 유지
+
+// 로그인 + 모드 OFF 로 시작 (자동 sync 는 사용자가 명시적으로 ON 해야 활성)
+// signIn()은 Google Identity Services 팝업을 통해 access token을 받고 저장한다.
 export async function enableSync(): Promise<void> {
   setSyncMode("off");
-  signIn();  // redirect — 이 시점 이후 코드는 페이지 navigate 로 실행 안 됨
+  await signIn();
 }
+
 
 // 로그아웃 + 상태 초기화
 export async function disableSync(): Promise<void> {

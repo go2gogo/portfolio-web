@@ -5,8 +5,9 @@ import {
   fetchWarning, fetchNaverInfo, fetchKrPriceHistory,
   fetchInvestorHistorySafe,
 } from "./lib/api";
-import { loadHoldings, loadPeaks, updatePeaksForward, removeHolding, renameGroup, deleteGroup, cleanupReservedAccounts, migrateLegacyHoldGroup } from "./lib/db";
+import { loadHoldings, loadPeaks, loadMemos, updatePeaksForward, removeHolding, renameGroup, deleteGroup, cleanupReservedAccounts, migrateLegacyHoldGroup } from "./lib/db";
 import { StockCard } from "./components/StockCard";
+import { MemoDialog } from "./components/MemoDialog";
 import { Tabs, buildTabs, filterByTab, US_MARKET_TAB_KEY } from "./components/Tabs";
 import { TotalRow } from "./components/TotalRow";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -36,7 +37,7 @@ import {
 } from "./lib/syncManager";
 import type { ConflictResult } from "./lib/syncManager";
 import { ConflictDialog } from "./components/ConflictDialog";
-import type { Stock } from "./types";
+import type { Stock, Memo } from "./types";
 
 // viewport 감지 — 폰 (≤ 640px) 자동 모바일 뷰
 function useIsMobile(): boolean {
@@ -72,12 +73,14 @@ const queryClient = new QueryClient({
 function Dashboard() {
   const [holdings, setHoldings] = useState<Stock[]>([]);
   const [peaks, setPeaks] = useState<Map<string, number>>(new Map());
+  const [memos, setMemos] = useState<Map<string, Memo>>(new Map());
   const [activeTab, setActiveTab] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [valuationTicker, setValuationTicker] = useState<string | null>(null);
   const [editing, setEditing] = useState<Stock | null>(null);
+  const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [donateOpen, setDonateOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
@@ -129,11 +132,12 @@ function Dashboard() {
       const removed = await cleanupReservedAccounts();
       // 잘못 저장된 account="보유" row 정리 (1회) — 빈 그룹과 통합
       const migrated = await migrateLegacyHoldGroup();
-      const [h, p] = await Promise.all([loadHoldings(), loadPeaks()]);
+      const [h, p, m] = await Promise.all([loadHoldings(), loadPeaks(), loadMemos()]);
       // eslint-disable-next-line no-console
-      console.log(`[v3 load] holdings=${h.length}, peaks=${p.size}, cleaned=${removed}, migrated=${migrated}`);
+      console.log(`[v3 load] holdings=${h.length}, peaks=${p.size}, memos=${m.size}, cleaned=${removed}, migrated=${migrated}`);
       setHoldings(h);
       setPeaks(p);
+      setMemos(m);
     })();
   }, [reloadKey]);
 
@@ -401,12 +405,14 @@ function Dashboard() {
                   peak={peaks.get(stock.ticker)}
                   chart={chartMap.get(stock.ticker)}
                   longHistory={longHistoryMap.get(stock.ticker)}
+                  memo={memos.get(stock.ticker)}
                   onOpenValuation={setValuationTicker}
                   onEdit={s => guardedAction(() => setEditing(s))}
                   onDelete={async s => {
                     await removeHolding(s.ticker, s.account || "");
                     setReloadKey(k => k + 1);
                   }}
+                  onOpenMemo={t => guardedAction(() => setMemoTicker(t))}
                 />
               ))}
             </div>
@@ -469,6 +475,23 @@ function Dashboard() {
         onClose={() => setEditing(null)}
         stock={editing}
         curPrice={editing ? priceMap.get(editing.ticker)?.price : undefined}
+        onChanged={() => setReloadKey(k => k + 1)}
+      />
+
+      <MemoDialog
+        isOpen={!!memoTicker}
+        onClose={() => setMemoTicker(null)}
+        ticker={memoTicker}
+        stockName={memoTicker
+          ? (holdings.find(h => h.ticker === memoTicker)?.name)
+          : undefined}
+        curPrice={memoTicker ? priceMap.get(memoTicker)?.price : undefined}
+        avgPrice={memoTicker
+          ? (() => {
+              const h = holdings.find(s => s.ticker === memoTicker && s.shares > 0);
+              return h?.avg_price;
+            })()
+          : undefined}
         onChanged={() => setReloadKey(k => k + 1)}
       />
 

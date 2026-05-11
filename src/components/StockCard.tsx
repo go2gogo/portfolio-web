@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Stock, Price, Investor, Consensus } from "../types";
+import { Lightbulb } from "lucide-react";
+import type { Stock, Price, Investor, Consensus, Memo } from "../types";
 import { formatSigned, signColor, formatVolume, isHoldingSleeping } from "../lib/format";
 import { getDimSleepingEnabled } from "../lib/proxyConfig";
+import { memoTagClass } from "../lib/memoColor";
 import { Sparkline } from "./Sparkline";
 import { AuxIndicators } from "./AuxIndicators";
 import { Tooltip, ColorName } from "./Tooltip";
@@ -18,9 +20,11 @@ interface Props {
   loading?: boolean;
   chart?: number[];   // 비거래일 sparkline 용 일봉 종가 시계열 (3개월)
   longHistory?: Investor[] | null;  // 200일 long history — 그리드 행 tooltip 의 5/20/60/120/200일 누적용
+  memo?: Memo;                                       // 종목별 메모 (있으면)
   onOpenValuation?: (ticker: string) => void;
   onEdit?: (stock: Stock) => void;
   onDelete?: (stock: Stock) => void;
+  onOpenMemo?: (ticker: string) => void;             // 메모 아이콘 클릭
 }
 
 // 신호 — 최근 5거래일 동향 + 연기금 5/20/60일 매수일 비율 (또는 외인비율 20일 fallback)
@@ -201,7 +205,7 @@ const TICK_INIT: TickState = { dir: undefined, arrow: "" };
 
 export function StockCard({
   stock, price, investor, investorHistory, consensus, sector, peak, warning, loading, chart, longHistory,
-  onOpenValuation, onEdit, onDelete,
+  memo, onOpenValuation, onEdit, onDelete, onOpenMemo,
 }: Props) {
   const [tick, setTick] = useState<TickState>(TICK_INIT);
 
@@ -262,6 +266,14 @@ export function StockCard({
     : "";
 
   const peakPct = peak && peak > 0 ? ((price.price - peak) / peak) * 100 : 0;
+
+  // 메모 — 목표가/손절가 도달 여부 (현재가 ≥ 목표가 / 현재가 ≤ 손절가)
+  const memoTargetReached =
+    memo?.targetPrice != null && Number.isFinite(memo.targetPrice) &&
+    price.price >= memo.targetPrice;
+  const memoStopReached =
+    memo?.stopPrice != null && Number.isFinite(memo.stopPrice) &&
+    price.price <= memo.stopPrice;
 
   // 전체수익 (보유 종목만 — shares > 0)
   const hasPosition = stock.shares > 0 && stock.avg_price > 0;
@@ -495,6 +507,32 @@ export function StockCard({
               {stock.name}
             </button>
           </Tooltip>
+          {/* 메모 태그 칩 — 태그 있을 때만, 클릭 시 메모 다이얼로그 열기 */}
+          {memo?.tag && onOpenMemo && (
+            <Tooltip content={
+              <>
+                <div className="font-bold mb-1 flex items-center gap-1">
+                  <Lightbulb size={12} strokeWidth={2} fill="currentColor" className="text-amber-400" />
+                  메모
+                </div>
+                {memo.text && (
+                  <div className="text-gray-700 whitespace-pre-wrap max-w-[280px] break-words mb-1">
+                    {memo.text.length > 200 ? memo.text.slice(0, 200) + "…" : memo.text}
+                  </div>
+                )}
+                <div className="text-emerald-700 text-[10px] mt-1">🔗 클릭 = 메모 열기</div>
+              </>
+            }>
+              <button type="button"
+                      onClick={() => onOpenMemo(stock.ticker)}
+                      className={`inline-flex items-center px-2 py-0.5 rounded-t-md
+                                  text-[10px] leading-none cursor-pointer
+                                  hover:brightness-95 transition
+                                  ${memoTagClass(memo.color)}`}>
+                {memo.tag}
+              </button>
+            </Tooltip>
+          )}
           {/* 수급 신호 — 외인+기관 동반매수 / 개인 떠받치기 / 외인비율 추세 */}
           {sig?.primary && (
             <Tooltip content={
@@ -573,7 +611,20 @@ export function StockCard({
           )}
         </div>
         <div className="flex items-end gap-0.5 shrink-0">
-          {/* hover 버튼 — 📊 ✏️ 🗑 */}
+          {/* hover 버튼 — 카드 hover 시 빈 회색 전구, 아이콘 hover 시 노란 백열등 점등 */}
+          {onOpenMemo && (
+            <button
+              type="button"
+              onClick={() => onOpenMemo(stock.ticker)}
+              title={memo ? "메모 보기/수정" : "메모 추가"}
+              className="group/lb opacity-0 group-hover:opacity-100
+                         px-0.5 transition inline-flex items-center
+                         text-slate-400 hover:text-amber-400
+                         hover:drop-shadow-[0_0_5px_rgba(251,191,36,0.95)]">
+              <Lightbulb size={16} strokeWidth={2.2}
+                         className="fill-none group-hover/lb:fill-current transition-colors" />
+            </button>
+          )}
           {onOpenValuation && /^[\dA-Za-z]{6}$/.test(stock.ticker) && (
             <button
               type="button"
@@ -750,6 +801,21 @@ export function StockCard({
                   <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
                     {price.price.toLocaleString()}원
                   </span>
+                  {/* 메모 — 목표가/손절가 도달 인디케이터 */}
+                  {memoTargetReached && (
+                    <span title={`목표가 ${memo!.targetPrice!.toLocaleString()}원 도달`}
+                          className="text-[10px] font-bold px-1 py-0.5 rounded
+                                     bg-emerald-100 text-emerald-700 border border-emerald-300">
+                      ▲ 목표
+                    </span>
+                  )}
+                  {memoStopReached && (
+                    <span title={`손절가 ${memo!.stopPrice!.toLocaleString()}원 도달`}
+                          className="text-[10px] font-bold px-1 py-0.5 rounded
+                                     bg-rose-100 text-rose-700 border border-rose-300">
+                      ▼ 손절
+                    </span>
+                  )}
                 </div>
                 <div className={`flex items-baseline gap-1 pl-6 font-bold ${signColor(dayDiff)}`}>
                   <span className="text-lg leading-tight bg-yellow-100 rounded px-1">
@@ -790,23 +856,58 @@ export function StockCard({
               );
             })() : null;
 
-            // 목표 위치 — 가격 비교에 따라 (좌측 가격 블록 안에 배치)
-            let order: (React.ReactElement | null)[];
-            if (rowTarget && consensus?.target) {
-              const t = consensus.target;
-              if (price.high && t > price.high) {
-                order = [rowTarget, rowHigh, rowCur, rowLow];
-              } else if (t > price.price) {
-                order = [rowHigh, rowTarget, rowCur, rowLow];
-              } else if (price.low && t > price.low) {
-                order = [rowHigh, rowCur, rowTarget, rowLow];
-              } else {
-                order = [rowHigh, rowCur, rowLow, rowTarget];
-              }
-            } else {
-              order = [rowHigh, rowCur, rowLow];
-            }
-            return <>{order.filter(Boolean)}</>;
+            // 메모 목표가 / 손절가 — 사용자 설정 (컨센서스 "목" 과 구분 — 초록/빨강 라벨)
+            const rowMemoTarget = memo?.targetPrice && memo.targetPrice > 0 ? (() => {
+              const t = memo.targetPrice;
+              const tDiff = t - price.price;
+              const tPct = price.price > 0 ? (tDiff / price.price) * 100 : 0;
+              const reached = memoTargetReached;
+              return (
+                <div key="memoTarget" className="text-xs text-gray-700">
+                  <span className={`text-[10px] font-bold ${reached
+                      ? "bg-emerald-100 text-emerald-700 rounded px-1 mr-0.5"
+                      : "text-emerald-600 mr-1"}`}>
+                    내목
+                  </span>
+                  {t.toLocaleString()}원
+                  <span className={`ml-1 text-[10px] ${signColor(tDiff)}`}>
+                    ({formatSigned(tDiff)}원, {tDiff >= 0 ? "+" : ""}{tPct.toFixed(2)}%)
+                  </span>
+                </div>
+              );
+            })() : null;
+
+            const rowMemoStop = memo?.stopPrice && memo.stopPrice > 0 ? (() => {
+              const s = memo.stopPrice;
+              const sDiff = s - price.price;
+              const sPct = price.price > 0 ? (sDiff / price.price) * 100 : 0;
+              const reached = memoStopReached;
+              return (
+                <div key="memoStop" className="text-xs text-gray-700">
+                  <span className={`text-[10px] font-bold ${reached
+                      ? "bg-rose-100 text-rose-700 rounded px-1 mr-0.5"
+                      : "text-rose-600 mr-1"}`}>
+                    손절
+                  </span>
+                  {s.toLocaleString()}원
+                  <span className={`ml-1 text-[10px] ${signColor(sDiff)}`}>
+                    ({formatSigned(sDiff)}원, {sDiff >= 0 ? "+" : ""}{sPct.toFixed(2)}%)
+                  </span>
+                </div>
+              );
+            })() : null;
+
+            // 모든 가격 행을 금액순 (높은 → 낮은) 정렬하여 표시
+            // 같은 가격이면 안정성을 위해 입력 순서 유지 (Array.sort 는 stable)
+            const allRows: { price: number; el: React.ReactElement }[] = [];
+            if (rowHigh && price.high) allRows.push({ price: price.high, el: rowHigh });
+            allRows.push({ price: price.price, el: rowCur });
+            if (rowLow && price.low) allRows.push({ price: price.low, el: rowLow });
+            if (rowTarget && consensus?.target) allRows.push({ price: consensus.target, el: rowTarget });
+            if (rowMemoTarget && memo?.targetPrice) allRows.push({ price: memo.targetPrice, el: rowMemoTarget });
+            if (rowMemoStop && memo?.stopPrice) allRows.push({ price: memo.stopPrice, el: rowMemoStop });
+            allRows.sort((a, b) => b.price - a.price);
+            return <>{allRows.map(r => r.el)}</>;
           })()}
         </div>
         </div>

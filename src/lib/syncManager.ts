@@ -5,7 +5,7 @@
 //   "on"      → 자동 sync 활성
 //   "off"     → 일시 중지 (수동 ↑↓ 만)
 
-import { exportAll, replaceAllHoldings, replaceAllPeaks, applyImportedSettings } from "./db";
+import { exportAll, replaceAllHoldings, replaceAllPeaks, replaceAllMemos, applyImportedSettings } from "./db";
 import type { ExportPayload } from "./db";
 import { isSignedIn, signIn, signOut, wasSignedIn, getAccessToken } from "./googleAuth";
 import { downloadFile, uploadFile, getFileMeta, deleteFile } from "./googleDrive";
@@ -75,6 +75,7 @@ export function resumeSync(): void { setSyncMode("on"); }
 let suppressNextAutoSync = false;
 
 // 내용 정규화 — exported_at 같은 noise 제외, 정렬로 결정적 직렬화
+// 주의: 새 동기화 필드 추가 시 반드시 여기에 포함시켜야 함 (안 그러면 변경이 silent skip 됨)
 function normalize(p: ExportPayload): string {
   const holdings = [...(p.holdings ?? [])]
     .map(s => ({
@@ -88,7 +89,19 @@ function normalize(p: ExportPayload): string {
   const peakKeys = Object.keys(p.peaks ?? {}).sort();
   const peaks: Record<string, number> = {};
   for (const k of peakKeys) peaks[k] = p.peaks[k];
-  return JSON.stringify({ holdings, peaks });
+  // memos — updatedAt 은 noise (저장 시점 차이) 라 정규화에서 제외, 콘텐츠만 비교
+  const memos = [...(p.memos ?? [])]
+    .map(m => ({
+      ticker: m.ticker,
+      text: m.text ?? "",
+      targetPrice: m.targetPrice ?? null,
+      stopPrice: m.stopPrice ?? null,
+      priceBasis: m.priceBasis ?? "",
+      tag: m.tag ?? "",
+      color: m.color ?? "",
+    }))
+    .sort((a, b) => a.ticker.localeCompare(b.ticker));
+  return JSON.stringify({ holdings, peaks, memos });
 }
 
 export async function uploadToDrive(): Promise<void> {
@@ -111,6 +124,8 @@ export async function downloadFromDrive(): Promise<boolean> {
   const { data, modifiedTime } = result;
   if (data.holdings) await replaceAllHoldings(data.holdings);
   if (data.peaks) await replaceAllPeaks(data.peaks);
+  // memos — 구버전 payload 에 없으면 빈 배열 (= 메모 없음 상태로 동기화)
+  await replaceAllMemos(data.memos ?? []);
   applyImportedSettings(data.settings);   // 독립 모드 등 동기화 대상 설정
   setLastSynced(modifiedTime);
   suppressNextAutoSync = true;

@@ -1,5 +1,5 @@
 import Dexie, { type Table } from "dexie";
-import type { Stock } from "../types";
+import type { Stock, Memo } from "../types";
 
 interface Peak { ticker: string; price: number; }
 interface ConfigKV { key: string; value: unknown; }
@@ -8,6 +8,7 @@ class PortfolioDB extends Dexie {
   holdings!: Table<Stock, string>;       // PK: ticker_account composite (string)
   peaks!: Table<Peak, string>;           // PK: ticker
   config!: Table<ConfigKV, string>;      // PK: key
+  memos!: Table<Memo, string>;           // PK: ticker
 
   constructor() {
     super("portfolio_v3");
@@ -15,6 +16,13 @@ class PortfolioDB extends Dexie {
       holdings: "&id, ticker, account",
       peaks: "&ticker",
       config: "&key",
+    });
+    // v2: memos 테이블 추가 (기존 테이블은 그대로 유지 — 자동 마이그레이션)
+    this.version(2).stores({
+      holdings: "&id, ticker, account",
+      peaks: "&ticker",
+      config: "&key",
+      memos: "&ticker",
     });
   }
 }
@@ -290,6 +298,7 @@ export async function updateHolding(s: Stock): Promise<void> {
 export interface ExportPayload {
   holdings: Stock[];
   peaks: Record<string, number>;
+  memos?: Memo[];                // 종목별 메모 (optional — 구버전 portfolio.json 호환)
   exported_at: string;
   // 다기기 동기화가 필요한 설정 (로컬-only 설정은 제외)
   settings?: {
@@ -297,7 +306,9 @@ export interface ExportPayload {
   };
 }
 export async function exportAll(): Promise<ExportPayload> {
-  const [stocks, peaks] = await Promise.all([loadHoldings(), loadPeaks()]);
+  const [stocks, peaks, memos] = await Promise.all([
+    loadHoldings(), loadPeaks(), loadMemos(),
+  ]);
   // id 필드 (내부 PK) 제거 + 관심ETF 그룹 제외 (v2 동일 — 미국증시 섹터 매핑용 내부 데이터)
   const cleanHoldings = stocks
     .filter(s => (s.account || "") !== "관심ETF")
@@ -308,6 +319,9 @@ export async function exportAll(): Promise<ExportPayload> {
     });
   const peaksObj: Record<string, number> = {};
   peaks.forEach((v, k) => { peaksObj[k] = v; });
+  // memos — 결정적 정렬 (ticker asc) 으로 직렬화 안정성 확보
+  const memosList: Memo[] = Array.from(memos.values())
+    .sort((a, b) => a.ticker.localeCompare(b.ticker));
   // settings — 다기기 동기화 대상 (independent groups mode)
   let independentGroups: boolean | undefined;
   try {
@@ -316,6 +330,7 @@ export async function exportAll(): Promise<ExportPayload> {
   return {
     holdings: cleanHoldings,
     peaks: peaksObj,
+    memos: memosList,
     exported_at: new Date().toISOString(),
     settings: {
       independentGroups,
@@ -424,4 +439,73 @@ export async function updatePeaksForward(
   }
   if (updates.length > 0) await db.peaks.bulkPut(updates);
   return updates.length;
+}
+
+// ─── 종목별 메모 CRUD ────────────────────────────────────────
+
+export async function getMemo(ticker: string): Promise<Memo | undefined> {
+  return await db.memos.get(ticker);
+}
+
+export async function loadMemos(): Promise<Map<string, Memo>> {
+  const all = await db.memos.toArray();
+  return new Map(all.map(m => [m.ticker, m]));
+}
+
+// upsert — 모든 콘텐츠 필드가 빈 값이면 자동 삭제 (빈 레코드 잔존 방지)
+// priceBasis 는 "기준 메타데이터" 라 단독으론 빈 메모 판정에서 제외
+// updatedAt 은 함수 내부에서 자동 설정
+export async function upsertMemo(
+  memo: Omit<Memo, "updatedAt">,
+): Promise<"saved" | "deleted"> {
+  const isEmpty =
+    !memo.text?.trim() &&
+    (memo.targetPrice == null || !Number.isFinite(memo.targetPrice)) &&
+    (memo.stopPrice == null || !Number.isFinite(memo.stopPrice)) &&
+    !memo.tag?.trim() &&
+    !memo.color;
+  if (isEmpty) {
+    await deleteMemo(memo.ticker);
+    return "deleted";
+  }
+  // priceBasis 는 목표가/손절가가 하나라도 있을 때만 의미 있음 — 둘 다 없으면 제거
+  const hasPriceBound =
+    (memo.targetPrice != null && Number.isFinite(memo.targetPrice)) ||
+    (memo.stopPrice != null && Number.isFinite(memo.stopPrice));
+  const next: Memo = {
+    ticker: memo.ticker,
+    text: memo.text?.trim() || undefined,
+    targetPrice: memo.targetPrice ?? undefined,
+    stopPrice: memo.stopPrice ?? undefined,
+    priceBasis: hasPriceBound ? memo.priceBasis : undefined,
+    tag: memo.tag?.trim() || undefined,
+    color: memo.color,
+    updatedAt: new Date().toISOString(),
+  };
+  await db.memos.put(next);
+  return "saved";
+}
+
+export async function deleteMemo(ticker: string): Promise<void> {
+  await db.memos.delete(ticker);
+}
+
+// Drive 다운로드 후 호출 — 전체 교체 (holdings/peaks 와 동일 패턴)
+export async function replaceAllMemos(memos: Memo[]): Promise<void> {
+  await db.transaction("rw", db.memos, async () => {
+    await db.memos.clear();
+    if (memos.length === 0) return;
+    // 유효성 필터링 — ticker 가 비어있거나 콘텐츠 없는 row 제거 (호환성 가드)
+    const valid = memos.filter(m =>
+      typeof m.ticker === "string" && m.ticker.length > 0 &&
+      (
+        (typeof m.text === "string" && m.text.trim().length > 0) ||
+        (typeof m.targetPrice === "number" && Number.isFinite(m.targetPrice)) ||
+        (typeof m.stopPrice === "number" && Number.isFinite(m.stopPrice)) ||
+        (typeof m.tag === "string" && m.tag.trim().length > 0) ||
+        m.color
+      )
+    );
+    if (valid.length > 0) await db.memos.bulkAdd(valid);
+  });
 }

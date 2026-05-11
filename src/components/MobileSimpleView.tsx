@@ -39,11 +39,12 @@ import { forceUpdate } from "./VersionBadge";
 import { NewVersionToast } from "./NewVersionToast";
 import { OnboardingDialog } from "./OnboardingDialog";
 import {
-  exportAll, replaceAllHoldings, replaceAllPeaks, loadHoldings, loadPeaks,
+  exportAll, replaceAllHoldings, replaceAllPeaks, loadHoldings, loadPeaks, loadMemos,
   deleteAllRowsForTicker, removeHolding, renameGroup, deleteGroup,
 } from "../lib/db";
 import { detectPortfolioJson } from "../lib/portfolioImport";
 import { MobileStockCard } from "./MobileStockCard";
+import { MemoDialog } from "./MemoDialog";
 import { TotalRow } from "./TotalRow";
 import { SearchDialog } from "./SearchDialog";
 import { EditHoldingDialog } from "./EditHoldingDialog";
@@ -112,6 +113,7 @@ export function MobileSimpleView() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [editing, setEditing] = useState<Stock | null>(null);
+  const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [valuationTicker, setValuationTicker] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState("");
   const [, setLastSyncedAt] = useState<string | null>(getLastSyncedAt());
@@ -177,6 +179,11 @@ export function MobileSimpleView() {
   const { data: peaks } = useQuery({
     queryKey: ["m-peaks"],
     queryFn: loadPeaks,
+    refetchOnWindowFocus: false,
+  });
+  const { data: memos } = useQuery({
+    queryKey: ["m-memos"],
+    queryFn: loadMemos,
     refetchOnWindowFocus: false,
   });
 
@@ -496,7 +503,9 @@ export function MobileSimpleView() {
                                chart={groupChartMap.get(s.ticker)}
                                investorHistory={investorHistoryMap.get(s.ticker)}
                                consensus={naverInfos.data?.get(s.ticker)?.consensus}
+                               memo={memos?.get(s.ticker)}
                                onOpenValuation={setValuationTicker}
+                               onOpenMemo={t => guardedAction(() => setMemoTicker(t))}
                                onEdit={st => guardedAction(() => setEditing(st))}
                                onDelete={async st => {
                                  const indep = getIndependentGroupsMode();
@@ -635,6 +644,25 @@ export function MobileSimpleView() {
           scheduleAutoSync();
         }} />
 
+      {/* 메모 편집 */}
+      <MemoDialog
+        isOpen={!!memoTicker}
+        onClose={() => setMemoTicker(null)}
+        ticker={memoTicker}
+        stockName={memoTicker
+          ? holdings.find(h => h.ticker === memoTicker)?.name
+          : undefined}
+        curPrice={memoTicker ? groupPriceMap.get(memoTicker)?.price : undefined}
+        avgPrice={memoTicker
+          ? (() => {
+              const h = holdings.find(s => s.ticker === memoTicker && s.shares > 0);
+              return h?.avg_price;
+            })()
+          : undefined}
+        onChanged={() => {
+          void queryClient.invalidateQueries({ queryKey: ["m-memos"] });
+        }} />
+
       {/* 첫 접속 안내 팝업 — 전용 프록시 미설정 시 자동 표시 */}
       <OnboardingDialog onOpenSettings={() => setSettingsOpen(true)} />
 
@@ -662,6 +690,7 @@ export function MobileSimpleView() {
             await downloadFromDrive();
             void queryClient.invalidateQueries({ queryKey: ["m-holdings"] });
             void queryClient.invalidateQueries({ queryKey: ["m-peaks"] });
+            void queryClient.invalidateQueries({ queryKey: ["m-memos"] });
             setLastSyncedAt(getLastSyncedAt());
           } catch { /* ignore */ }
           setConflict(null);

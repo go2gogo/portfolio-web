@@ -1,7 +1,9 @@
 import { useState } from "react";
-import type { Stock, Price, Consensus, Investor } from "../types";
+import { Lightbulb } from "lucide-react";
+import type { Stock, Price, Consensus, Investor, Memo } from "../types";
 import { formatSigned, signColor, formatVolume, isHoldingSleeping } from "../lib/format";
 import { getDimSleepingEnabled } from "../lib/proxyConfig";
+import { memoTagClass } from "../lib/memoColor";
 import { pickTodayInvestor } from "../lib/api";
 import { Sparkline } from "./Sparkline";
 import { Tooltip, ColorName } from "./Tooltip";
@@ -41,9 +43,11 @@ interface Props {
   chart?: number[];           // 비거래일 sparkline 용 일봉 종가 시계열
   investorHistory?: Investor[] | null;   // 60일 수급 (AuxIndicators 외국인/기관/연기금)
   consensus?: Consensus | null; // 네이버 컨센서스 (목표가 + 점수)
+  memo?: Memo;
   onOpenValuation?: (ticker: string) => void;  // 📊 기업가치 모달
   onEdit?: (stock: Stock) => void;
   onDelete?: (stock: Stock) => void;
+  onOpenMemo?: (ticker: string) => void;       // 📝 메모 다이얼로그
 }
 
 const STOP_LOSS_PCT = -9;
@@ -95,7 +99,8 @@ function openTossStock(ticker: string) {
 }
 
 export function MobileStockCard({
-  stock, price, peak, sector, warning, chart, investorHistory, consensus, onOpenValuation, onEdit, onDelete,
+  stock, price, peak, sector, warning, chart, investorHistory, consensus, memo,
+  onOpenValuation, onEdit, onDelete, onOpenMemo,
 }: Props) {
   // 투자자 매매동향 레이어 토글 (👥 버튼)
   const [showFlow, setShowFlow] = useState(false);
@@ -127,6 +132,13 @@ export function MobileStockCard({
     ? `직전 거래일 종가 ${price.prevClose.toLocaleString()}원 대비 ${formatSigned(colorDiff)}원 (${colorPct >= 0 ? "+" : ""}${colorPct.toFixed(2)}%) — 현재가 금액색은 ${priceColorName} 입니다`
     : "";
   const peakPct = peak && peak > 0 ? ((price.price - peak) / peak) * 100 : 0;
+  // 메모 — 목표가/손절가 도달 여부
+  const memoTargetReached =
+    memo?.targetPrice != null && Number.isFinite(memo.targetPrice) &&
+    price.price >= memo.targetPrice;
+  const memoStopReached =
+    memo?.stopPrice != null && Number.isFinite(memo.stopPrice) &&
+    price.price <= memo.stopPrice;
   const hasPosition = stock.shares > 0 && stock.avg_price > 0;
   const pnl = hasPosition ? Math.round((price.price - stock.avg_price) * stock.shares) : 0;
   const pnlPct = hasPosition ? ((price.price - stock.avg_price) / stock.avg_price) * 100 : 0;
@@ -195,8 +207,30 @@ export function MobileStockCard({
               {stock.name}
             </button>
           </Tooltip>
+          {/* 메모 태그 칩 — 태그 있을 때만 */}
+          {memo?.tag && onOpenMemo && (
+            <button onClick={() => onOpenMemo(stock.ticker)}
+                    className={`inline-flex items-center px-2 py-0.5 rounded-t-md
+                                text-[10px] leading-none w-fit
+                                ${memoTagClass(memo.color)}`}>
+              {memo.tag}
+            </button>
+          )}
         </div>
         <div className="flex items-end gap-1 shrink-0">
+          {onOpenMemo && (
+            <button onClick={() => onOpenMemo(stock.ticker)}
+                    title={memo ? "메모 보기/수정" : "메모 추가"}
+                    className={`px-2 py-1 rounded text-xs leading-none
+                                bg-gray-100 hover:bg-gray-200
+                                inline-flex items-center
+                                ${memo
+                                  ? "text-amber-400 drop-shadow-[0_0_3px_rgba(251,191,36,0.7)]"
+                                  : "text-slate-400"}`}>
+              <Lightbulb size={14} strokeWidth={2}
+                         fill={memo ? "currentColor" : "none"} />
+            </button>
+          )}
           {onOpenValuation && /^[\dA-Za-z]{6}$/.test(stock.ticker) && (
             <button onClick={() => onOpenValuation(stock.ticker)}
                     title="기업가치 보기"
@@ -346,10 +380,24 @@ export function MobileStockCard({
 
           const rowCur = (
             <div key="cur" className="relative">
-              <div className="flex items-baseline gap-1">
+              <div className="flex items-baseline gap-1 flex-wrap">
                 <span className={`text-xl font-bold leading-tight ${priceColorCls}`}>
                   {price.price.toLocaleString()}원
                 </span>
+                {memoTargetReached && (
+                  <span title={`목표가 ${memo!.targetPrice!.toLocaleString()}원 도달`}
+                        className="text-[9px] font-bold px-1 py-0.5 rounded
+                                   bg-emerald-100 text-emerald-700 border border-emerald-300">
+                    ▲ 목표
+                  </span>
+                )}
+                {memoStopReached && (
+                  <span title={`손절가 ${memo!.stopPrice!.toLocaleString()}원 도달`}
+                        className="text-[9px] font-bold px-1 py-0.5 rounded
+                                   bg-rose-100 text-rose-700 border border-rose-300">
+                    ▼ 손절
+                  </span>
+                )}
               </div>
               <div className={`flex items-baseline gap-1 pl-2 font-bold ${signColor(dayDiff)}`}>
                 <span className="text-lg leading-tight bg-yellow-100 rounded px-1">
@@ -390,23 +438,55 @@ export function MobileStockCard({
             );
           })() : null;
 
-          // 목표를 가격 비교에 따라 위치 결정
-          let order: (React.ReactElement | null)[];
-          if (rowTarget && consensus?.target) {
-            const t = consensus.target;
-            if (price.high && t > price.high) {
-              order = [rowTarget, rowHigh, rowCur, rowLow];
-            } else if (t > price.price) {
-              order = [rowHigh, rowTarget, rowCur, rowLow];
-            } else if (price.low && t > price.low) {
-              order = [rowHigh, rowCur, rowTarget, rowLow];
-            } else {
-              order = [rowHigh, rowCur, rowLow, rowTarget];
-            }
-          } else {
-            order = [rowHigh, rowCur, rowLow];
-          }
-          return <>{order.filter(Boolean)}</>;
+          // 메모 목표가 / 손절가
+          const rowMemoTarget = memo?.targetPrice && memo.targetPrice > 0 ? (() => {
+            const t = memo.targetPrice;
+            const tDiff = t - price.price;
+            const tPct = price.price > 0 ? (tDiff / price.price) * 100 : 0;
+            return (
+              <div key="memoTarget" className="text-xs text-gray-700">
+                <span className={`text-[10px] font-bold ${memoTargetReached
+                    ? "bg-emerald-100 text-emerald-700 rounded px-1 mr-0.5"
+                    : "text-emerald-600 mr-0.5"}`}>
+                  내목
+                </span>
+                {t.toLocaleString()}원
+                <span className={`ml-0.5 text-[10px] ${signColor(tDiff)}`}>
+                  ({formatSigned(tDiff)}원, {tPct >= 0 ? "+" : ""}{tPct.toFixed(2)}%)
+                </span>
+              </div>
+            );
+          })() : null;
+
+          const rowMemoStop = memo?.stopPrice && memo.stopPrice > 0 ? (() => {
+            const s = memo.stopPrice;
+            const sDiff = s - price.price;
+            const sPct = price.price > 0 ? (sDiff / price.price) * 100 : 0;
+            return (
+              <div key="memoStop" className="text-xs text-gray-700">
+                <span className={`text-[10px] font-bold ${memoStopReached
+                    ? "bg-rose-100 text-rose-700 rounded px-1 mr-0.5"
+                    : "text-rose-600 mr-0.5"}`}>
+                  손절
+                </span>
+                {s.toLocaleString()}원
+                <span className={`ml-0.5 text-[10px] ${signColor(sDiff)}`}>
+                  ({formatSigned(sDiff)}원, {sPct >= 0 ? "+" : ""}{sPct.toFixed(2)}%)
+                </span>
+              </div>
+            );
+          })() : null;
+
+          // 모든 가격 행을 금액순 (높은 → 낮은) 정렬
+          const allRows: { price: number; el: React.ReactElement }[] = [];
+          if (rowHigh && price.high) allRows.push({ price: price.high, el: rowHigh });
+          allRows.push({ price: price.price, el: rowCur });
+          if (rowLow && price.low) allRows.push({ price: price.low, el: rowLow });
+          if (rowTarget && consensus?.target) allRows.push({ price: consensus.target, el: rowTarget });
+          if (rowMemoTarget && memo?.targetPrice) allRows.push({ price: memo.targetPrice, el: rowMemoTarget });
+          if (rowMemoStop && memo?.stopPrice) allRows.push({ price: memo.stopPrice, el: rowMemoStop });
+          allRows.sort((a, b) => b.price - a.price);
+          return <>{allRows.map(r => r.el)}</>;
         })()}
       </div>
       </div>

@@ -768,18 +768,62 @@ export async function fetchYahooChart(
   }
 }
 
+// Yahoo ^지수 → 토스 indices 코드 매핑 (있는 것만, 없으면 Yahoo fallback)
+// KOSPI 200(^KS200) / KOSDAQ 100(^KQ100) 토스 코드 미확인이라 Yahoo 그대로.
+const TOSS_INDEX_CODE: Record<string, string> = {
+  "^KS11": "KGG01P",   // KOSPI 종합
+  "^KQ11": "QGG01P",   // KOSDAQ 종합
+};
+
+// 토스 indices price API → UsIndex 변환
+async function fetchTossIndexPrice(
+  yahooSymbol: string, name: string,
+): Promise<UsIndex | null> {
+  const code = TOSS_INDEX_CODE[yahooSymbol];
+  if (!code) return null;
+  const url = `https://wts-info-api.tossinvest.com/api/v1/index-prices/${code}`;
+  try {
+    const resp = await fetchProxied(url);
+    if (!resp.ok) return null;
+    const data = await resp.json() as {
+      result?: {
+        close?: number;
+        base?: number;     // 어제 종가 (% 기준)
+        // open/high/low/volume/value/changeType/high52w/low52w/tradeTime 등 있음
+      };
+    };
+    const r = data.result;
+    if (!r || typeof r.close !== "number" || typeof r.base !== "number") return null;
+    const diff = r.close - r.base;
+    const pct = r.base > 0 ? (diff / r.base) * 100 : 0;
+    const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+    return {
+      symbol: yahooSymbol, name,
+      price: r.close, prev: r.base, prevClose: r.base,
+      diff, pct, currency: "KRW",
+      tradeDate: todayKst, marketState: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 // 다수 심볼 한꺼번에 — 병렬 fetch
-// .KS 6자리 (KODEX 등 한국 ETF) 는 토스로 라우팅 — 보유 종목과 동일 소스로
-// 신선도/안정성 ↑ + Yahoo crumb 인증 회피.
-// ^KS11/^KS200/^KQ11/^KQ100 등 지수는 ksRegex 매칭 안 돼 Yahoo 그대로.
+// .KS 6자리 (KODEX 등 한국 ETF) → 토스 stock-prices
+// ^KS11/^KQ11 (KOSPI/KOSDAQ 종합) → 토스 index-prices
+// 그 외 (^KS200/^KQ100/미국 등) → Yahoo
+// 토스 우선, 실패 시 Yahoo fallback (안정성).
 export async function fetchYahooBatch(
   pairs: { symbol: string; name: string }[]
 ): Promise<Map<string, UsIndex>> {
   const ksRegex = /^(\d{6})\.KS$/;
   const ksItems = pairs.filter(p => ksRegex.test(p.symbol));
-  const otherItems = pairs.filter(p => !ksRegex.test(p.symbol));
+  const tossIdxItems = pairs.filter(p => TOSS_INDEX_CODE[p.symbol]);
+  const otherItems = pairs.filter(p =>
+    !ksRegex.test(p.symbol) && !TOSS_INDEX_CODE[p.symbol]
+  );
 
-  const [ksMap, yahooResults] = await Promise.all([
+  const [ksMap, idxResults, yahooResults] = await Promise.all([
     ksItems.length > 0
       ? fetchTossPrices(ksItems.map(p => ksRegex.exec(p.symbol)![1]))
           .then(prices => {
@@ -803,13 +847,29 @@ export async function fetchYahooBatch(
           })
           .catch(() => new Map<string, UsIndex>())
       : Promise.resolve(new Map<string, UsIndex>()),
+    Promise.all(tossIdxItems.map(p => fetchTossIndexPrice(p.symbol, p.name))),
     Promise.all(otherItems.map(p => fetchYahooQuote(p.symbol, p.name))),
   ]);
 
   const merged = new Map<string, UsIndex>(ksMap);
+  for (const r of idxResults) {
+    if (r) merged.set(r.symbol, r);
+  }
   for (const r of yahooResults) {
     if (r) merged.set(r.symbol, r);
   }
+
+  // 토스 index 가 한 번이라도 실패하면 Yahoo 로 fallback (안정성)
+  const missingIdx = tossIdxItems.filter(p => !merged.has(p.symbol));
+  if (missingIdx.length > 0) {
+    const fallback = await Promise.all(
+      missingIdx.map(p => fetchYahooQuote(p.symbol, p.name))
+    );
+    for (const r of fallback) {
+      if (r) merged.set(r.symbol, r);
+    }
+  }
+
   return merged;
 }
 

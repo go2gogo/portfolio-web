@@ -769,17 +769,48 @@ export async function fetchYahooChart(
 }
 
 // 다수 심볼 한꺼번에 — 병렬 fetch
+// .KS 6자리 (KODEX 등 한국 ETF) 는 토스로 라우팅 — 보유 종목과 동일 소스로
+// 신선도/안정성 ↑ + Yahoo crumb 인증 회피.
+// ^KS11/^KS200/^KQ11/^KQ100 등 지수는 ksRegex 매칭 안 돼 Yahoo 그대로.
 export async function fetchYahooBatch(
   pairs: { symbol: string; name: string }[]
 ): Promise<Map<string, UsIndex>> {
-  const results = await Promise.all(
-    pairs.map(p => fetchYahooQuote(p.symbol, p.name))
-  );
-  const map = new Map<string, UsIndex>();
-  for (const r of results) {
-    if (r) map.set(r.symbol, r);
+  const ksRegex = /^(\d{6})\.KS$/;
+  const ksItems = pairs.filter(p => ksRegex.test(p.symbol));
+  const otherItems = pairs.filter(p => !ksRegex.test(p.symbol));
+
+  const [ksMap, yahooResults] = await Promise.all([
+    ksItems.length > 0
+      ? fetchTossPrices(ksItems.map(p => ksRegex.exec(p.symbol)![1]))
+          .then(prices => {
+            const out = new Map<string, UsIndex>();
+            const metaByCode = new Map(
+              ksItems.map(p => [ksRegex.exec(p.symbol)![1], p])
+            );
+            for (const tp of prices) {
+              const m = metaByCode.get(tp.ticker);
+              if (!m) continue;
+              const diff = tp.price - tp.base;
+              const pct = tp.base > 0 ? (diff / tp.base) * 100 : 0;
+              out.set(m.symbol, {
+                symbol: m.symbol, name: m.name,
+                price: tp.price, prev: tp.base, prevClose: tp.prevClose,
+                diff, pct, currency: "KRW",
+                tradeDate: tp.trade_date, marketState: "",
+              });
+            }
+            return out;
+          })
+          .catch(() => new Map<string, UsIndex>())
+      : Promise.resolve(new Map<string, UsIndex>()),
+    Promise.all(otherItems.map(p => fetchYahooQuote(p.symbol, p.name))),
+  ]);
+
+  const merged = new Map<string, UsIndex>(ksMap);
+  for (const r of yahooResults) {
+    if (r) merged.set(r.symbol, r);
   }
-  return map;
+  return merged;
 }
 
 // 헤더용 핵심 6종 (deprecated: UsMarketTab 으로 통합 가능하지만 헤더 바에서도 사용)

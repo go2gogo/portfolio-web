@@ -46,6 +46,7 @@ import { detectPortfolioJson } from "../lib/portfolioImport";
 import { MobileStockCard } from "./MobileStockCard";
 import { MemoDialog } from "./MemoDialog";
 import { TotalRow } from "./TotalRow";
+import { MobileTodayPnLLayer } from "./TodayPnLTable";
 import { SearchDialog } from "./SearchDialog";
 import { EditHoldingDialog } from "./EditHoldingDialog";
 import { HelpDialog, markHelpSeen, shouldShowHelpFirstTime } from "./HelpDialog";
@@ -118,6 +119,7 @@ export function MobileSimpleView() {
   const [savedMsg, setSavedMsg] = useState("");
   const [, setLastSyncedAt] = useState<string | null>(getLastSyncedAt());
   const [conflict, setConflict] = useState<ConflictResult | null>(null);
+  const [todayPnLOpen, setTodayPnLOpen] = useState(false);
   const pendingActionRef = useRef<(() => void) | null>(null);
   // 그룹 탭 길게 누르기 → 액션 시트 (이름 변경 / 삭제)
   const [tabMenu, setTabMenu] = useState<{ key: string; label: string } | null>(null);
@@ -525,14 +527,31 @@ export function MobileSimpleView() {
                                }} />
             ))}
           </div>
-          {/* 합계 — 화면 하단 fixed (TotalRow 자체에 bg/border 있음) */}
+          {/* 합계 — 화면 하단 fixed.
+              합계 클릭 시 위로 오늘 수익/손해 레이어가 펼쳐짐, 다시 클릭 또는 바깥 탭 시 닫힘. */}
           {groupHoldings.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 z-40
-                             pb-2 px-3 flex justify-center pointer-events-none">
-              <div className="pointer-events-auto">
-                <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
+            <>
+              {/* 바깥 클릭 닫힘용 backdrop (열렸을 때만) */}
+              {todayPnLOpen && (
+                <div className="fixed inset-0 z-30"
+                     onClick={() => setTodayPnLOpen(false)} />
+              )}
+              <div className="fixed bottom-0 left-0 right-0 z-40
+                               pb-2 px-3 flex flex-col items-center gap-2
+                               pointer-events-none">
+                {todayPnLOpen && (
+                  <div className="pointer-events-auto cursor-pointer"
+                       onClick={() => setTodayPnLOpen(false)}>
+                    <MobileTodayPnLLayer holdings={groupHoldings} prices={groupPriceMap} />
+                  </div>
+                )}
+                <div className="pointer-events-auto cursor-pointer"
+                     onClick={() => setTodayPnLOpen(o => !o)}
+                     title={todayPnLOpen ? "닫기" : "오늘 수익/손해 보기"}>
+                  <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
+                </div>
               </div>
-            </div>
+            </>
           )}
         </>
       )}

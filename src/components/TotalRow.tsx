@@ -38,7 +38,7 @@ export function TotalRow({ holdings, prices }: Props) {
   const totalColor = signColor(pnl) || "text-rose-700";
 
   return (
-    <div className="sticky bottom-0 z-30 mt-3 w-fit bg-white border border-gray-300
+    <div className="w-fit bg-white border border-gray-300
                      rounded-lg shadow-md px-5 py-3
                      grid grid-cols-[auto_auto_auto_auto]
                      gap-x-3 gap-y-1 items-baseline

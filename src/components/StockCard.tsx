@@ -197,7 +197,7 @@ function MiniCandleChart({
   if (prices.length < 2) {
     return <div style={{ width, height }} className="text-[10px] text-gray-400 flex items-center justify-center">차트 데이터 없음</div>;
   }
-  const padX = 4, padTop = 4, padBottom = 4;
+  const padX = 4, padTop = 4, padBottom = 14;  // padBottom 에 X축 월 라벨 공간 포함
   const padRight = 50;  // 우측 가격축 라벨 공간
   const innerW = width - padX - padRight;
   const innerH = height - padTop - padBottom;
@@ -319,6 +319,27 @@ function MiniCandleChart({
       <text x={labelX} y={volumeTop + 8} fontSize="9" fill="#6b7280" textAnchor="start">
         {fmtVolShort(maxVol)}
       </text>
+      {/* X축 월 라벨 — 달이 바뀌는 첫 거래일에 "N월" 표시 */}
+      {(() => {
+        const labels: { x: number; label: string }[] = [];
+        let prevMonth = "";
+        prices.forEach((p, i) => {
+          if (!p.date || p.date.length < 7) return;
+          const mm = p.date.slice(5, 7);
+          if (mm !== prevMonth) {
+            const x = padX + slot * i + slot / 2;
+            labels.push({ x, label: `${Number(mm)}월` });
+            prevMonth = mm;
+          }
+        });
+        // 첫 라벨이 시작 너무 가깝거나 좌측 잘리면 제거
+        return labels.map((l, idx) => (
+          <text key={`xl-${idx}`} x={l.x} y={height - 3}
+                fontSize="9" fill="#6b7280" textAnchor="middle">
+            {l.label}
+          </text>
+        ));
+      })()}
       {/* 외인비율 라인 — 보라 점선, 별도 Y 스케일 (캔들 영역에 오버레이) */}
       {(() => {
         if (!foreignRatio || foreignRatio.size === 0) return null;

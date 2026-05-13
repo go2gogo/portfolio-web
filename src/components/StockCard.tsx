@@ -1015,7 +1015,7 @@ export function StockCard({
                   prices={priceHistory.slice(-60)}
                   avgPrice={hasPosition ? stock.avg_price : undefined}
                   targetPrice={consensus?.target && consensus.target > 0 ? consensus.target : undefined}
-                  width={520}
+                  width={620}
                   height={150}
                 />
               </div>

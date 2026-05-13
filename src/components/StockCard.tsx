@@ -1238,9 +1238,9 @@ export function StockCard({
                         px-2 py-1 basis-[40%] min-w-0 space-y-0.5
                         flex flex-col justify-start">
         {/* 다른 그룹 표시 — 같은 ticker 가 다른 account 에 속해 있는 경우, 현재 그룹 제외.
-            회색 배경 알약으로 통계 박스 좌측 상단에 부착. */}
+            회색 배경 알약으로 통계 박스 우측 상단에 부착 (좌측엔 보유종목 정보가 있음). */}
         {otherGroups && otherGroups.length > 0 && (
-          <div className="absolute -top-2 left-1 z-30 flex items-baseline gap-1
+          <div className="absolute -top-2 right-1 z-30 flex items-baseline gap-1
                           text-[10px] leading-tight">
             {otherGroups.map(g => (
               <span key={g}

@@ -33,7 +33,10 @@ function buildProxyUrl(base: string, targetUrl: string): string {
 }
 
 // 자동 fallback — 건강한 proxy 우선 + 실패 시 다른 proxy로 재시도
-export async function fetchProxied(targetUrl: string): Promise<Response> {
+// init 옵션 — POST + body 등 RequestInit 일부 전달 가능 (워커가 POST 지원)
+export async function fetchProxied(
+  targetUrl: string, init?: RequestInit,
+): Promise<Response> {
   const urls = getProxyUrls();
   // 건강(=down 아님) 우선, down은 후순위. 그 안에서는 랜덤 (부하 분산)
   const healthy = urls.filter(u => !isProxyDown(u))
@@ -44,7 +47,7 @@ export async function fetchProxied(targetUrl: string): Promise<Response> {
   let lastErr: unknown;
   for (const base of order) {
     try {
-      const resp = await fetch(buildProxyUrl(base, targetUrl));
+      const resp = await fetch(buildProxyUrl(base, targetUrl), init);
       if (resp.ok) {
         reportProxySuccess(base);
         return resp;
@@ -452,6 +455,71 @@ export async function fetchKrShortSelling(
 
   out.sort((a, b) => a.date.localeCompare(b.date));
   return out;
+}
+
+// ─── 컨센서스 예상치 시계열 (토스 v2 financial/estimate) ─────────────
+// 분기별 발표치 vs 애널리스트 예상치 + 서프라이즈율. POST {} 호출 — 워커 POST 통과 필요.
+export type EstimateMetric = "revenue" | "operating-income" | "eps";
+
+export interface EstimatePoint {
+  period: string;            // "2025-12" 형식
+  actual: number | null;     // 발표치 (미래 분기는 null)
+  estimate: number | null;   // 애널리스트 예상치
+  surprise: number | null;   // 서프라이즈율 (%)
+}
+
+export interface EstimateSeries {
+  metric: EstimateMetric;
+  points: EstimatePoint[];
+  /** 다음 분기 예상치의 직전 분기 발표치 대비 변동률 (%) */
+  fluctuationRate: number | null;
+  /** 다음 분기 예상치 위치 — "HIGH" | "MID" | "LOW" 등 토스 분류 */
+  position: string | null;
+}
+
+// metric → 응답 key 매핑
+const ESTIMATE_KEY: Record<EstimateMetric, { actual: string; est: string }> = {
+  "revenue":          { actual: "revenue",         est: "revenueEst" },
+  "operating-income": { actual: "operatingIncome", est: "operatingIncomeEst" },
+  "eps":              { actual: "eps",             est: "epsEst" },
+};
+
+export async function fetchTossEstimate(
+  ticker: string, metric: EstimateMetric,
+): Promise<EstimateSeries | null> {
+  if (!/^\d{6}$/.test(ticker)) return null;
+  const target = `https://wts-info-api.tossinvest.com/api/v2/companies/A${ticker}/financial/estimate/${metric}`;
+  let resp: Response;
+  try {
+    resp = await fetchProxied(target, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } catch { return null; }
+  if (!resp.ok) return null;
+  const data = await resp.json() as {
+    result?: {
+      fluctuationRate?: number;
+      position?: string;
+      graphs?: Array<Record<string, unknown>>;
+    };
+  };
+  const r = data.result;
+  if (!r || !Array.isArray(r.graphs)) return null;
+  const { actual, est } = ESTIMATE_KEY[metric];
+  const points: EstimatePoint[] = r.graphs.map(g => ({
+    period: String(g.period ?? ""),
+    actual: typeof g[actual] === "number" ? (g[actual] as number) : null,
+    estimate: typeof g[est] === "number" ? (g[est] as number) : null,
+    surprise: typeof g.surprise === "number" ? (g.surprise as number) : null,
+  })).filter(p => p.period);
+  return {
+    metric,
+    points,
+    fluctuationRate: typeof r.fluctuationRate === "number" ? r.fluctuationRate : null,
+    position: typeof r.position === "string" ? r.position : null,
+  };
 }
 
 // 시장 매매동향 fetch — 토스 indices net-buying daily API (인증 X)

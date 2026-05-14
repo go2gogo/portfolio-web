@@ -14,8 +14,9 @@ import {
 } from "../lib/fundamentals";
 import type { FundamentalData, ConsensusReport, Shareholder } from "../lib/fundamentals";
 import { FinancialCharts } from "./FinancialCharts";
+import { ConsensusCharts } from "./ConsensusCharts";
 import { signColor } from "../lib/format";
-import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithEvents, fetchKrDisclosures, fetchKrShortSelling, fetchNaverInfo } from "../lib/api";
+import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithEvents, fetchKrDisclosures, fetchKrShortSelling, fetchNaverInfo, fetchTossEstimate } from "../lib/api";
 import type { DividendEvent, SplitEvent, DartDisclosure } from "../lib/api";
 import type { PricePoint } from "../lib/api";
 import type { Investor } from "../types";
@@ -242,6 +243,26 @@ export function ValuationModal({
     enabled: isOpen && /^[\dA-Za-z]{6}$/.test(ticker),
     staleTime: 24 * 3600_000,
   });
+  // 컨센서스 예상치 — 분기별 발표치 vs 애널리스트 예상 (매출/영업이익/EPS)
+  const estEnabled = isOpen && /^\d{6}$/.test(ticker);
+  const { data: estRevenue } = useQuery({
+    queryKey: ["est", ticker, "revenue"],
+    queryFn: () => fetchTossEstimate(ticker, "revenue"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
+  const { data: estOpIncome } = useQuery({
+    queryKey: ["est", ticker, "operating-income"],
+    queryFn: () => fetchTossEstimate(ticker, "operating-income"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
+  const { data: estEps } = useQuery({
+    queryKey: ["est", ticker, "eps"],
+    queryFn: () => fetchTossEstimate(ticker, "eps"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
   const downOnBackdropRef = useRef(false);
 
   if (!isOpen) return null;
@@ -330,6 +351,12 @@ export function ValuationModal({
           {finSeries && (
             <div className="mb-3">
               <FinancialCharts series={finSeries} />
+            </div>
+          )}
+          {/* 컨센서스 예상치 — 분기별 발표 vs 예상 (매출/영업이익/EPS) */}
+          {(estRevenue || estOpIncome || estEps) && (
+            <div className="mb-3">
+              <ConsensusCharts revenue={estRevenue} operatingIncome={estOpIncome} eps={estEps} />
             </div>
           )}
           {/* 3 컬럼 레이아웃 */}

@@ -54,12 +54,10 @@ import { Sparkline } from "./Sparkline";
 import { ValuationModal } from "./ValuationModal";
 import {
   getSyncState, getLastSyncedAt, enableSync, disableSync, pauseSync, resumeSync,
-  uploadToDrive, downloadFromDrive, scheduleAutoSync, checkConflict,
+  uploadToDrive, downloadFromDrive, scheduleAutoSync,
   tryRestoreSession,
 } from "../lib/syncManager";
 import { isSignedIn, getAccessToken, wasSignedIn } from "../lib/googleAuth";
-import type { ConflictResult } from "../lib/syncManager";
-import { ConflictDialog } from "./ConflictDialog";
 import type { Stock } from "../types";
 
 const KR_KEY = "__kr__";  // 한국 (KOSPI/KOSDAQ + 한국 섹터 ETF + 짝 미국 섹터 ETF)
@@ -117,10 +115,7 @@ export function MobileSimpleView() {
   const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [valuationTicker, setValuationTicker] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState("");
-  const [, setLastSyncedAt] = useState<string | null>(getLastSyncedAt());
-  const [conflict, setConflict] = useState<ConflictResult | null>(null);
   const [todayPnLOpen, setTodayPnLOpen] = useState(false);
-  const pendingActionRef = useRef<(() => void) | null>(null);
   // 그룹 탭 길게 누르기 → 액션 시트 (이름 변경 / 삭제)
   const [tabMenu, setTabMenu] = useState<{ key: string; label: string } | null>(null);
   const longPressTimer = useRef<number | null>(null);
@@ -132,26 +127,8 @@ export function MobileSimpleView() {
     return () => clearTimeout(t);
   }, []);
 
-  // sync 모드 ON 일 때 — 앱 로드 시 silent token 갱신 + 충돌 체크
-  useEffect(() => {
-    void (async () => {
-      const restored = await tryRestoreSession();
-      if (!restored) return;
-      const result = await checkConflict();
-      if (result.kind === "conflict") setConflict(result);
-    })();
-  }, []);
-
-  // 편집/검색 액션 시작 전 — 충돌 체크 후 진행
-  const guardedAction = async (action: () => void) => {
-    const result = await checkConflict();
-    if (result.kind === "conflict") {
-      pendingActionRef.current = action;
-      setConflict(result);
-    } else {
-      action();
-    }
-  };
+  // 구글 로그인/충돌 체크는 설정 다이얼로그 열 때만 수행 (아래 settings useEffect 내부).
+  // 검색/편집/메모 등 일반 이동에선 Drive API 호출 안 함.
   const [activeTab, setActiveTab] = useState<string>(() => {
     if (typeof localStorage === "undefined") return KR_KEY;
     return localStorage.getItem(TAB_KEY) ?? KR_KEY;
@@ -416,7 +393,7 @@ export function MobileSimpleView() {
                             disabled:opacity-50 transition">
           <span className={`inline-block ${isFetching ? "animate-spin" : ""}`}>🔄</span>
         </button>
-        <button onClick={() => guardedAction(() => setSearchOpen(true))}
+        <button onClick={() => setSearchOpen(true)}
                 title="종목 검색 / 추가"
                 className="p-1.5 rounded hover:bg-gray-100 transition">
           🔍
@@ -522,8 +499,8 @@ export function MobileSimpleView() {
                                otherGroups={(tickerGroupsMap.get(s.ticker) ?? [])
                                  .filter(g => g !== (s.account || ""))}
                                onOpenValuation={setValuationTicker}
-                               onOpenMemo={t => guardedAction(() => setMemoTicker(t))}
-                               onEdit={st => guardedAction(() => setEditing(st))}
+                               onOpenMemo={t => setMemoTicker(t)}
+                               onEdit={st => setEditing(st)}
                                onDelete={async st => {
                                  const indep = getIndependentGroupsMode();
                                  const msg = indep
@@ -713,38 +690,6 @@ export function MobileSimpleView() {
         isOpen={helpOpen}
         onClose={() => { markHelpSeen(); setHelpOpen(false); }}
         variant="mobile"
-      />
-
-      <ConflictDialog
-        isOpen={conflict?.kind === "conflict"}
-        driveTs={conflict?.kind === "conflict" ? conflict.driveTs : ""}
-        lastTs={conflict?.kind === "conflict" ? conflict.lastTs : null}
-        onUseRemote={async () => {
-          try {
-            await downloadFromDrive();
-            void queryClient.invalidateQueries({ queryKey: ["m-holdings"] });
-            void queryClient.invalidateQueries({ queryKey: ["m-peaks"] });
-            void queryClient.invalidateQueries({ queryKey: ["m-memos"] });
-            setLastSyncedAt(getLastSyncedAt());
-          } catch { /* ignore */ }
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
-        onOverwrite={async () => {
-          try {
-            await uploadToDrive();
-            setLastSyncedAt(getLastSyncedAt());
-          } catch { /* ignore */ }
-          setConflict(null);
-          if (pendingActionRef.current) {
-            pendingActionRef.current();
-            pendingActionRef.current = null;
-          }
-        }}
-        onCancel={() => {
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
       />
 
       {/* 기업가치 모달 — 📊 버튼으로 호출 */}

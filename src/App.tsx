@@ -32,12 +32,7 @@ import { getEffectivePollMs, getPersonalProxyUrl } from "./lib/proxyConfig";
 import { ValuationModal } from "./components/ValuationModal";
 import { MobileSimpleView } from "./components/MobileSimpleView";
 import { HelpDialog, markHelpSeen, shouldShowHelpFirstTime } from "./components/HelpDialog";
-import {
-  scheduleAutoSync, checkConflict, downloadFromDrive, uploadToDrive,
-  tryRestoreSession,
-} from "./lib/syncManager";
-import type { ConflictResult } from "./lib/syncManager";
-import { ConflictDialog } from "./components/ConflictDialog";
+import { scheduleAutoSync } from "./lib/syncManager";
 import type { Stock, Memo } from "./types";
 
 // viewport 감지 — 폰 (≤ 640px) 자동 모바일 뷰
@@ -84,8 +79,6 @@ function Dashboard() {
   const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [donateOpen, setDonateOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [conflict, setConflict] = useState<ConflictResult | null>(null);
-  const pendingActionRef = useRef<(() => void) | null>(null);
 
   // 첫 방문 자동 노출 — 1.5초 지연 (다른 모달과 충돌 회피)
   useEffect(() => {
@@ -94,33 +87,13 @@ function Dashboard() {
     return () => clearTimeout(t);
   }, []);
 
-  // 앱 로드 시 — sync 모드 ON 이면 토큰 silent refresh + 충돌 체크
-  useEffect(() => {
-    void (async () => {
-      const restored = await tryRestoreSession();
-      if (!restored) return;
-      const result = await checkConflict();
-      if (result.kind === "conflict") setConflict(result);
-    })();
-  }, []);
-
   // 데이터 변경 시 — 자동 sync 트리거 (mode ON 일 때만 실행됨)
+  // 구글 로그인/충돌 체크는 설정 다이얼로그 열 때만 수행 (SettingsDialog 내부).
   const initialReloadRef = useRef(true);
   useEffect(() => {
     if (initialReloadRef.current) { initialReloadRef.current = false; return; }
     scheduleAutoSync();
   }, [reloadKey]);
-
-  // 편집/검색 액션 시작 전 — 충돌 체크 후 진행
-  const guardedAction = async (action: () => void) => {
-    const result = await checkConflict();
-    if (result.kind === "conflict") {
-      pendingActionRef.current = action;
-      setConflict(result);
-    } else {
-      action();
-    }
-  };
   // 설정 변경 시 reloadKey 증가 → BASE_REFRESH_MS / usePersonalProxy 재계산
   const BASE_REFRESH_MS = useMemo(() => getEffectivePollMs(), [reloadKey]);
   const usePersonalProxy = useMemo(() => !!getPersonalProxyUrl(), [reloadKey]);
@@ -329,7 +302,7 @@ function Dashboard() {
               🔄
             </button>
             <button
-              onClick={() => guardedAction(() => setSearchOpen(true))}
+              onClick={() => setSearchOpen(true)}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700
                          text-white rounded text-sm">
               🔍 검색
@@ -430,12 +403,12 @@ function Dashboard() {
                   otherGroups={(tickerGroupsMap.get(stock.ticker) ?? [])
                     .filter(g => g !== (stock.account || ""))}
                   onOpenValuation={setValuationTicker}
-                  onEdit={s => guardedAction(() => setEditing(s))}
+                  onEdit={s => setEditing(s)}
                   onDelete={async s => {
                     await removeHolding(s.ticker, s.account || "");
                     setReloadKey(k => k + 1);
                   }}
-                  onOpenMemo={t => guardedAction(() => setMemoTicker(t))}
+                  onOpenMemo={t => setMemoTicker(t)}
                 />
               ))}
             </div>
@@ -452,36 +425,6 @@ function Dashboard() {
       <HelpDialog
         isOpen={helpOpen}
         onClose={() => { markHelpSeen(); setHelpOpen(false); }}
-      />
-
-      <ConflictDialog
-        isOpen={conflict?.kind === "conflict"}
-        driveTs={conflict?.kind === "conflict" ? conflict.driveTs : ""}
-        lastTs={conflict?.kind === "conflict" ? conflict.lastTs : null}
-        onUseRemote={async () => {
-          try {
-            await downloadFromDrive();
-            setReloadKey(k => k + 1);
-          } catch { /* ignore */ }
-          setConflict(null);
-          // pending action 은 취소 (사용자가 새 데이터 보고 다시 진행)
-          pendingActionRef.current = null;
-        }}
-        onOverwrite={async () => {
-          try {
-            await uploadToDrive();
-          } catch { /* ignore */ }
-          setConflict(null);
-          // 덮어쓰기 후 원래 액션 진행
-          if (pendingActionRef.current) {
-            pendingActionRef.current();
-            pendingActionRef.current = null;
-          }
-        }}
-        onCancel={() => {
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
       />
 
       <SettingsDialog

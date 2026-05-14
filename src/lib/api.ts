@@ -33,7 +33,10 @@ function buildProxyUrl(base: string, targetUrl: string): string {
 }
 
 // 자동 fallback — 건강한 proxy 우선 + 실패 시 다른 proxy로 재시도
-export async function fetchProxied(targetUrl: string): Promise<Response> {
+// init 옵션 — POST + body 등 RequestInit 일부 전달 가능 (워커가 POST 지원)
+export async function fetchProxied(
+  targetUrl: string, init?: RequestInit,
+): Promise<Response> {
   const urls = getProxyUrls();
   // 건강(=down 아님) 우선, down은 후순위. 그 안에서는 랜덤 (부하 분산)
   const healthy = urls.filter(u => !isProxyDown(u))
@@ -44,7 +47,7 @@ export async function fetchProxied(targetUrl: string): Promise<Response> {
   let lastErr: unknown;
   for (const base of order) {
     try {
-      const resp = await fetch(buildProxyUrl(base, targetUrl));
+      const resp = await fetch(buildProxyUrl(base, targetUrl), init);
       if (resp.ok) {
         reportProxySuccess(base);
         return resp;
@@ -454,6 +457,71 @@ export async function fetchKrShortSelling(
   return out;
 }
 
+// ─── 컨센서스 예상치 시계열 (토스 v2 financial/estimate) ─────────────
+// 분기별 발표치 vs 애널리스트 예상치 + 서프라이즈율. POST {} 호출 — 워커 POST 통과 필요.
+export type EstimateMetric = "revenue" | "operating-income" | "eps";
+
+export interface EstimatePoint {
+  period: string;            // "2025-12" 형식
+  actual: number | null;     // 발표치 (미래 분기는 null)
+  estimate: number | null;   // 애널리스트 예상치
+  surprise: number | null;   // 서프라이즈율 (%)
+}
+
+export interface EstimateSeries {
+  metric: EstimateMetric;
+  points: EstimatePoint[];
+  /** 다음 분기 예상치의 직전 분기 발표치 대비 변동률 (%) */
+  fluctuationRate: number | null;
+  /** 다음 분기 예상치 위치 — "HIGH" | "MID" | "LOW" 등 토스 분류 */
+  position: string | null;
+}
+
+// metric → 응답 key 매핑
+const ESTIMATE_KEY: Record<EstimateMetric, { actual: string; est: string }> = {
+  "revenue":          { actual: "revenue",         est: "revenueEst" },
+  "operating-income": { actual: "operatingIncome", est: "operatingIncomeEst" },
+  "eps":              { actual: "eps",             est: "epsEst" },
+};
+
+export async function fetchTossEstimate(
+  ticker: string, metric: EstimateMetric,
+): Promise<EstimateSeries | null> {
+  if (!/^\d{6}$/.test(ticker)) return null;
+  const target = `https://wts-info-api.tossinvest.com/api/v2/companies/A${ticker}/financial/estimate/${metric}`;
+  let resp: Response;
+  try {
+    resp = await fetchProxied(target, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+  } catch { return null; }
+  if (!resp.ok) return null;
+  const data = await resp.json() as {
+    result?: {
+      fluctuationRate?: number;
+      position?: string;
+      graphs?: Array<Record<string, unknown>>;
+    };
+  };
+  const r = data.result;
+  if (!r || !Array.isArray(r.graphs)) return null;
+  const { actual, est } = ESTIMATE_KEY[metric];
+  const points: EstimatePoint[] = r.graphs.map(g => ({
+    period: String(g.period ?? ""),
+    actual: typeof g[actual] === "number" ? (g[actual] as number) : null,
+    estimate: typeof g[est] === "number" ? (g[est] as number) : null,
+    surprise: typeof g.surprise === "number" ? (g.surprise as number) : null,
+  })).filter(p => p.period);
+  return {
+    metric,
+    points,
+    fluctuationRate: typeof r.fluctuationRate === "number" ? r.fluctuationRate : null,
+    position: typeof r.position === "string" ? r.position : null,
+  };
+}
+
 // 시장 매매동향 fetch — 토스 indices net-buying daily API (인증 X)
 //   KOSPI: KGG01P  / KOSDAQ: QGG01P
 //   API 동작: from 은 "응답의 최신 날짜" (해당 일자부터 과거로 count 일치 반환)
@@ -715,10 +783,12 @@ export async function fetchYahooQuote(symbol: string, name: string): Promise<UsI
     // 색상용 prevClose 보존 — 비거래일 보정 전 원래 값
     const prevClose = prev;
 
-    // 비거래일 보정 (KR fetchTossPrices 와 동일 로직) —
-    // CLOSED 상태에서 마지막 정규장 거래의 KST 날짜가 오늘과 다르면 어제대비 0.
-    // PRE/POST 는 활성 세션 (preMarket vs 마지막 정규장 종가) 의미 있어 보존.
-    if (state === "CLOSED" && tradeDate) {
+    // 비거래일 보정 — KR(.KS/.KQ/^KS*/^KQ*) 만 적용.
+    // 한국 종목/지수는 장 마감 후 새 가격이 안 들어오면 그냥 % 0 으로 가리는 게 자연스러움.
+    // 미국/글로벌/선물/원자재/환율 등은 선행지수 의미가 있어 마지막 정규장 종가 기준 % 그대로 유지.
+    // (저유동성 미국 ETF 의 경우 정규장 중에도 tradeDate 가 어제로 잡힐 수 있어 KR 만 보정)
+    const isKr = /\.K[SQ]$|^\^K[SQ]/.test(symbol);
+    if (isKr && state === "CLOSED" && tradeDate) {
       const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
       if (tradeDate !== todayKst) {
         prev = price;  // 비거래일 → 어제대비 0
@@ -766,18 +836,109 @@ export async function fetchYahooChart(
   }
 }
 
+// Yahoo ^지수 → 토스 indices 코드 매핑 (있는 것만, 없으면 Yahoo fallback)
+// KOSPI 200(^KS200) / KOSDAQ 100(^KQ100) 토스 코드 미확인이라 Yahoo 그대로.
+const TOSS_INDEX_CODE: Record<string, string> = {
+  "^KS11": "KGG01P",   // KOSPI 종합
+  "^KQ11": "QGG01P",   // KOSDAQ 종합
+};
+
+// 토스 indices price API → UsIndex 변환
+async function fetchTossIndexPrice(
+  yahooSymbol: string, name: string,
+): Promise<UsIndex | null> {
+  const code = TOSS_INDEX_CODE[yahooSymbol];
+  if (!code) return null;
+  const url = `https://wts-info-api.tossinvest.com/api/v1/index-prices/${code}`;
+  try {
+    const resp = await fetchProxied(url);
+    if (!resp.ok) return null;
+    const data = await resp.json() as {
+      result?: {
+        close?: number;
+        base?: number;     // 어제 종가 (% 기준)
+        // open/high/low/volume/value/changeType/high52w/low52w/tradeTime 등 있음
+      };
+    };
+    const r = data.result;
+    if (!r || typeof r.close !== "number" || typeof r.base !== "number") return null;
+    const diff = r.close - r.base;
+    const pct = r.base > 0 ? (diff / r.base) * 100 : 0;
+    const todayKst = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+    return {
+      symbol: yahooSymbol, name,
+      price: r.close, prev: r.base, prevClose: r.base,
+      diff, pct, currency: "KRW",
+      tradeDate: todayKst, marketState: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
 // 다수 심볼 한꺼번에 — 병렬 fetch
+// .KS 6자리 (KODEX 등 한국 ETF) → 토스 stock-prices
+// ^KS11/^KQ11 (KOSPI/KOSDAQ 종합) → 토스 index-prices
+// 그 외 (^KS200/^KQ100/미국 등) → Yahoo
+// 토스 우선, 실패 시 Yahoo fallback (안정성).
 export async function fetchYahooBatch(
   pairs: { symbol: string; name: string }[]
 ): Promise<Map<string, UsIndex>> {
-  const results = await Promise.all(
-    pairs.map(p => fetchYahooQuote(p.symbol, p.name))
+  const ksRegex = /^(\d{6})\.KS$/;
+  const ksItems = pairs.filter(p => ksRegex.test(p.symbol));
+  const tossIdxItems = pairs.filter(p => TOSS_INDEX_CODE[p.symbol]);
+  const otherItems = pairs.filter(p =>
+    !ksRegex.test(p.symbol) && !TOSS_INDEX_CODE[p.symbol]
   );
-  const map = new Map<string, UsIndex>();
-  for (const r of results) {
-    if (r) map.set(r.symbol, r);
+
+  const [ksMap, idxResults, yahooResults] = await Promise.all([
+    ksItems.length > 0
+      ? fetchTossPrices(ksItems.map(p => ksRegex.exec(p.symbol)![1]))
+          .then(prices => {
+            const out = new Map<string, UsIndex>();
+            const metaByCode = new Map(
+              ksItems.map(p => [ksRegex.exec(p.symbol)![1], p])
+            );
+            for (const tp of prices) {
+              const m = metaByCode.get(tp.ticker);
+              if (!m) continue;
+              const diff = tp.price - tp.base;
+              const pct = tp.base > 0 ? (diff / tp.base) * 100 : 0;
+              out.set(m.symbol, {
+                symbol: m.symbol, name: m.name,
+                price: tp.price, prev: tp.base, prevClose: tp.prevClose,
+                diff, pct, currency: "KRW",
+                tradeDate: tp.trade_date, marketState: "",
+              });
+            }
+            return out;
+          })
+          .catch(() => new Map<string, UsIndex>())
+      : Promise.resolve(new Map<string, UsIndex>()),
+    Promise.all(tossIdxItems.map(p => fetchTossIndexPrice(p.symbol, p.name))),
+    Promise.all(otherItems.map(p => fetchYahooQuote(p.symbol, p.name))),
+  ]);
+
+  const merged = new Map<string, UsIndex>(ksMap);
+  for (const r of idxResults) {
+    if (r) merged.set(r.symbol, r);
   }
-  return map;
+  for (const r of yahooResults) {
+    if (r) merged.set(r.symbol, r);
+  }
+
+  // 토스 index 가 한 번이라도 실패하면 Yahoo 로 fallback (안정성)
+  const missingIdx = tossIdxItems.filter(p => !merged.has(p.symbol));
+  if (missingIdx.length > 0) {
+    const fallback = await Promise.all(
+      missingIdx.map(p => fetchYahooQuote(p.symbol, p.name))
+    );
+    for (const r of fallback) {
+      if (r) merged.set(r.symbol, r);
+    }
+  }
+
+  return merged;
 }
 
 // 헤더용 핵심 6종 (deprecated: UsMarketTab 으로 통합 가능하지만 헤더 바에서도 사용)
@@ -794,11 +955,12 @@ export async function fetchUsIndices(): Promise<UsIndex[]> {
   return Array.from(map.values());
 }
 
-// 네이버 금융 HTML 파싱 — 섹터 + 컨센서스 (목표주가 + 투자의견)
-// 단일 페이지 fetch 후 둘 다 추출 (네트워크 1회)
+// 네이버 금융 HTML 파싱 — 섹터 + 컨센서스 + 기업개요
+// 단일 페이지 fetch 후 모두 추출 (네트워크 1회)
 export interface NaverInfo {
   sector: string;
   consensus: Consensus | null;
+  description?: string[];   // #summary_info p 들 — 사업·제품·전략 짧은 문장 (출처: 에프앤가이드)
 }
 
 export async function fetchNaverInfo(ticker: string): Promise<NaverInfo> {
@@ -862,7 +1024,18 @@ export async function fetchNaverInfo(ticker: string): Promise<NaverInfo> {
         consensus = { target: targetPrice, score, opinion };
       }
     }
-    return { sector, consensus };
+
+    // 기업개요 — #summary_info 안의 <p> 들 (출처: 에프앤가이드)
+    let description: string[] | undefined;
+    const summaryEl = doc.querySelector("#summary_info");
+    if (summaryEl) {
+      const ps = Array.from(summaryEl.querySelectorAll("p"))
+        .map(p => (p.textContent ?? "").trim())
+        .filter(t => t.length > 0);
+      if (ps.length > 0) description = ps;
+    }
+
+    return { sector, consensus, description };
   } catch {
     return empty;
   }

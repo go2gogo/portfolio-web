@@ -409,6 +409,94 @@ export async function fetchMajorShareholders(ticker: string): Promise<Shareholde
   return rows;
 }
 
+// ─────────── 시계열 (연간 4년치, Wisereport cF1001 같은 페이지) ───────────
+// 단위:
+//   금액 (revenue/op_income/net_income/total_assets/total_debt/total_equity/cf_*/capex/fcf/dps) — 억원 또는 원
+//   비율 (op_margin/net_margin/roe/roa/debt_ratio/dividend_*) — %
+// (n/null) 값은 결측 (포커스트 미공시 등).
+export interface FinancialSeries {
+  years: string[];                  // ["2022", "2023", "2024", "2025"]
+  revenue:        (number | null)[]; // 매출액 (억원)
+  op_income:      (number | null)[]; // 영업이익 (억원)
+  net_income:     (number | null)[]; // 당기순이익 (억원)
+  total_assets:   (number | null)[]; // 자산총계 (억원)
+  total_debt:     (number | null)[]; // 부채총계 (억원)
+  total_equity:   (number | null)[]; // 자본총계 (억원)
+  op_margin:      (number | null)[]; // 영업이익률 (%)
+  net_margin:     (number | null)[]; // 순이익률 (%)
+  roe:            (number | null)[]; // ROE (%)
+  roa:            (number | null)[]; // ROA (%)
+  debt_ratio:     (number | null)[]; // 부채비율 (%)
+  cf_operating:   (number | null)[]; // 영업활동현금흐름 (억원)
+  cf_investing:   (number | null)[]; // 투자활동현금흐름 (억원)
+  cf_financing:   (number | null)[]; // 재무활동현금흐름 (억원)
+  capex:          (number | null)[]; // CAPEX (억원)
+  fcf:            (number | null)[]; // FCF (억원)
+  dps:            (number | null)[]; // 현금DPS (원)
+  dividend_yield: (number | null)[]; // 배당수익률 (%)
+  dividend_payout:(number | null)[]; // 배당성향 (%)
+}
+
+export async function fetchWisereportSeries(ticker: string): Promise<FinancialSeries | null> {
+  const url = `https://navercomp.wisereport.co.kr/v2/company/cF1001.aspx?cmp_cd=${ticker}&fin_typ=0&freq_typ=Y`;
+  const doc = await fetchHtml(url);
+  if (!doc) return null;
+  const tbl = doc.querySelector("table#cTB26");
+  if (!tbl) return null;
+
+  // 헤더에서 연간 연도 추출 (첫 4개 col) — "2022/12" → "2022"
+  const headerCells = Array.from(tbl.querySelectorAll("thead th[scope='col']"));
+  const yearLabels: string[] = [];
+  for (const th of headerCells) {
+    const txt = _cleanWs(th.textContent);
+    const m = /^(\d{4})\//.exec(txt);
+    if (m && yearLabels.length < 4) yearLabels.push(m[1]);
+    if (yearLabels.length >= 4) break;
+  }
+
+  // 각 행 — th = 항목명, td 의 처음 4개 = 연간
+  const collect = (label: string): (number | null)[] => {
+    const result: (number | null)[] = [null, null, null, null];
+    tbl.querySelectorAll("tbody tr").forEach(tr => {
+      const th = tr.querySelector("th");
+      if (!th) return;
+      if (_cleanWs(th.textContent) !== label) return;
+      const tds = Array.from(tr.querySelectorAll("td"));
+      for (let i = 0; i < 4 && i < tds.length; i++) {
+        const raw = _cleanWs(tds[i].textContent);
+        if (!raw || raw === "-" || raw === "N/A") { result[i] = null; continue; }
+        const clean = raw.replace(/,/g, "").replace(/\((.+?)\)/, "-$1");
+        const n = Number(clean);
+        result[i] = Number.isFinite(n) ? n : null;
+      }
+    });
+    return result;
+  };
+
+  return {
+    years: yearLabels,
+    revenue:         collect("매출액"),
+    op_income:       collect("영업이익"),
+    net_income:      collect("당기순이익"),
+    total_assets:    collect("자산총계"),
+    total_debt:      collect("부채총계"),
+    total_equity:    collect("자본총계"),
+    op_margin:       collect("영업이익률"),
+    net_margin:      collect("순이익률"),
+    roe:             collect("ROE(%)"),
+    roa:             collect("ROA(%)"),
+    debt_ratio:      collect("부채비율"),
+    cf_operating:    collect("영업활동현금흐름"),
+    cf_investing:    collect("투자활동현금흐름"),
+    cf_financing:    collect("재무활동현금흐름"),
+    capex:           collect("CAPEX"),
+    fcf:             collect("FCF"),
+    dps:             collect("현금DPS(원)"),
+    dividend_yield:  collect("현금배당수익률"),
+    dividend_payout: collect("현금배당성향(%)"),
+  };
+}
+
 // ─────────── 통합: 모든 데이터 한 번에 ───────────
 export interface FullValuation {
   fundamental: FundamentalData;

@@ -1,4 +1,4 @@
-// 보유/관심 종목 정렬 — 7가지 옵션 + asc/desc 토글
+// 보유/관심 종목 정렬 — 8가지 옵션 + asc/desc 토글
 // sleeping (장마감/거래 정지) 종목은 정렬 키에 관계없이 항상 맨 아래.
 
 import type { Stock, Price } from "../types";
@@ -6,6 +6,7 @@ import { isHoldingSleeping } from "./format";
 
 export type SortKey =
   | "dayChange"   // 금일 변동% (기본)
+  | "dayPnl"      // 오늘 손익(원) — shares × dayDiff
   | "volume"      // 거래량
   | "input"       // 입력 순서
   | "name"        // 이름 가나다
@@ -18,6 +19,7 @@ export type SortDirection = "asc" | "desc";
 
 export const SORT_LABELS: Record<SortKey, string> = {
   dayChange:  "금일 변동",
+  dayPnl:     "오늘 손익",
   volume:     "거래량",
   input:      "입력 순서",
   name:       "이름 (가나다)",
@@ -30,6 +32,7 @@ export const SORT_LABELS: Record<SortKey, string> = {
 // 키별 적응형 방향 라벨 — 의미가 자연 언어로 직관적
 export const DIRECTION_LABELS: Record<SortKey, { asc: string; desc: string }> = {
   dayChange:  { asc: "작은값부터", desc: "큰값부터" },
+  dayPnl:     { asc: "많이 까먹은 순", desc: "많이 번 순" },
   volume:     { asc: "적은순",     desc: "많은순" },
   input:      { asc: "처음부터",   desc: "나중부터" },
   name:       { asc: "ㄱ → ㅎ",   desc: "ㅎ → ㄱ" },
@@ -42,6 +45,7 @@ export const DIRECTION_LABELS: Record<SortKey, { asc: string; desc: string }> = 
 // 각 옵션의 자연스러운 default 방향
 export const DEFAULT_DIR: Record<SortKey, SortDirection> = {
   dayChange:  "desc",  // 큰 % 가 위
+  dayPnl:     "desc",  // 많이 번 종목 위
   volume:     "desc",  // 많이 거래된 순
   input:      "asc",   // 입력순 (위에서 아래)
   name:       "asc",   // ㄱ → ㅎ
@@ -94,6 +98,14 @@ const COMPARATORS: Record<SortKey, CmpFn> = {
     const pctA = pa && pa.base > 0 ? (pa.price - pa.base) / pa.base : 0;
     const pctB = pb && pb.base > 0 ? (pb.price - pb.base) / pb.base : 0;
     return pctA - pctB;
+  },
+  dayPnl: (a, b, ctx) => {
+    // 오늘 손익(원) = shares × (현재가 - 기준가). 관심종목(shares=0)은 0.
+    const pa = ctx.prices.get(a.ticker);
+    const pb = ctx.prices.get(b.ticker);
+    const krwA = pa ? (pa.price - pa.base) * a.shares : 0;
+    const krwB = pb ? (pb.price - pb.base) * b.shares : 0;
+    return krwA - krwB;
   },
   volume: (a, b, ctx) => {
     const va = ctx.prices.get(a.ticker)?.volume ?? 0;

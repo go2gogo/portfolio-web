@@ -7,8 +7,12 @@ import {
   getPersonalProxyUrl, setPersonalProxyUrl,
   getPersonalPollMs, setPersonalPollMs, POLL_OPTIONS,
   getDimSleepingEnabled, setDimSleepingEnabled,
+  checkPersonalProxyPostSupport, invalidatePersonalProxyStatusCache,
+  type PersonalProxyStatus,
 } from "../lib/proxyConfig";
 import { resetProxyStats } from "../lib/proxyStatus";
+
+const UPDATE_GUIDE_URL = "https://github.com/hanjungwoo3/portfolio-web/blob/main/workers/proxy/UPDATE-POST-SUPPORT.md";
 import { getIndependentGroupsMode, setIndependentGroupsMode } from "../lib/groupMode";
 import { findTickerConflicts, type TickerConflict } from "../lib/db";
 import { GroupConflictDialog } from "./GroupConflictDialog";
@@ -17,6 +21,7 @@ import {
   getSyncState, getLastSyncedAt, enableSync, disableSync, pauseSync, resumeSync,
   uploadToDrive, downloadFromDrive, tryRestoreSession,
 } from "../lib/syncManager";
+import { isSignedIn, getAccessToken, wasSignedIn } from "../lib/googleAuth";
 
 interface Props {
   isOpen: boolean;
@@ -33,7 +38,9 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
   const [proxyUrl, setProxyUrl] = useState("");
   const [pollMs, setPollMs] = useState(10_000);
   const [syncState, setSyncState] = useState(getSyncState());
+  const [proxyStatus, setProxyStatus] = useState<PersonalProxyStatus | "checking">("checking");
   const [syncBusy, setSyncBusy] = useState(false);
+  const [syncBusyMsg, setSyncBusyMsg] = useState("");   // 진행 중 오버레이 메시지
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(getLastSyncedAt());
   const [independentMode, setIndependent] = useState(getIndependentGroupsMode());
   const [conflicts, setConflicts] = useState<TickerConflict[] | null>(null);
@@ -66,8 +73,27 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
     setSyncState(getSyncState());
     setLastSyncedAt(getLastSyncedAt());
     setIndependent(getIndependentGroupsMode());
-    // 다이얼로그 열 때 — sync 모드 ON 이면 토큰 silent refresh 시도 (배경)
-    void tryRestoreSession();
+    // 개인 프록시 POST 호환성 검증 — 캐시된 결과 우선, 없으면 비동기 호출
+    setProxyStatus("checking");
+    void checkPersonalProxyPostSupport().then(setProxyStatus);
+    // 다이얼로그 열 때 — 토큰 silent refresh 시도, 실패하면 자동 logout (설정 안에서만 표시)
+    // 평소 다른 곳에선 로그인 UI 가 안 보임 (업로드/다운로드 시점에만 필요)
+    void (async () => {
+      const initial = getSyncState();
+      if (initial === "unconfigured") return;
+      if (isSignedIn()) {
+        void tryRestoreSession();   // 백그라운드 silent refresh
+        return;
+      }
+      if (!wasSignedIn()) return;
+      const token = await getAccessToken();
+      if (!token) {
+        await disableSync();
+        setSyncState("unconfigured");
+        setLastSyncedAt(null);
+        setStatusMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+      }
+    })();
     void (async () => {
       const data = await exportAll();
       setRaw(JSON.stringify(data, null, 2));
@@ -82,6 +108,9 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
     if (!v) {
       setPersonalProxyUrl(null);
       setProxyUrl("");
+      invalidatePersonalProxyStatusCache();
+      resetProxyStats();                // 옛 down 카운트 즉시 reset
+      setProxyStatus("no-personal");
       setStatusMsg("✅ 전용 프록시 해제 — 공개 4-way 사용");
       onChanged();
       return;
@@ -135,6 +164,10 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
     setProxyUrl(v);
     resetProxyStats();              // 옛 4-way down 상태 제거 → 적응형 polling 즉시 정상화
     queryClient.invalidateQueries();
+    // POST 호환성 재검증 (새 URL)
+    invalidatePersonalProxyStatusCache();
+    setProxyStatus("checking");
+    void checkPersonalProxyPostSupport().then(setProxyStatus);
     onChanged();
     setStatusMsg(`✅ 전용 프록시 검증 OK — 적용: ${v}`);
   };
@@ -211,8 +244,22 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
          onClick={e => {
            if (e.target === e.currentTarget && downOnBackdropRef.current) onClose();
          }}>
-      <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full
+      <div className="relative bg-white rounded-lg shadow-xl max-w-2xl w-full
                        max-h-[90vh] flex flex-col">
+        {/* ─── 진행 중 오버레이 — 업로드/다운로드/로그인 시 ─── */}
+        {syncBusy && syncBusyMsg && (
+          <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm
+                          rounded-lg flex items-center justify-center">
+            <div className="bg-white border border-gray-200 rounded-lg shadow-lg
+                            px-6 py-4 flex items-center gap-3">
+              <span className="inline-block w-5 h-5 border-2 border-blue-500
+                               border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium text-gray-800">
+                {syncBusyMsg}
+              </span>
+            </div>
+          </div>
+        )}
         <header className="px-5 py-3 border-b bg-gray-50 flex items-center gap-3">
           <h2 className="text-lg font-bold shrink-0">⚙️ 설정</h2>
           <span className="text-xs text-gray-500 truncate">{statusMsg}</span>
@@ -236,16 +283,19 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                 disabled={syncBusy}
                 onClick={async () => {
                   setSyncBusy(true);
+                  setSyncBusyMsg("Google 로그인 중...");
                   setStatusMsg("Google 로그인 중...");
                   try {
                     await enableSync();
                     setSyncState("off");
                     // 로그인 후 — Drive 에 파일 있으면 다운로드, 없으면 업로드
+                    setSyncBusyMsg("Drive 데이터 확인 중...");
                     const downloaded = await downloadFromDrive();
                     if (downloaded) {
                       onChanged();
                       setStatusMsg("✅ 로그인 + Drive 데이터 가져옴 (자동 sync OFF)");
                     } else {
+                      setSyncBusyMsg("첫 업로드 중...");
                       await uploadToDrive();
                       setStatusMsg("✅ 로그인 + 첫 업로드 완료 (자동 sync OFF)");
                     }
@@ -256,6 +306,7 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                     setStatusMsg(`⚠️ ${msg}`);
                   } finally {
                     setSyncBusy(false);
+                    setSyncBusyMsg("");
                   }
                 }}
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700
@@ -290,15 +341,24 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                   <button disabled={syncBusy}
                     onClick={async () => {
                       setSyncBusy(true);
+                      setSyncBusyMsg("Drive 에 업로드 중...");
                       try {
                         await uploadToDrive();
                         setLastSyncedAt(getLastSyncedAt());
                         setStatusMsg("✅ Drive 에 업로드");
                       } catch (e) {
                         const msg = (e as Error).message;
-                        alert(`❌ Drive 업로드 실패\n\n${msg}\n\n로그인 만료 또는 네트워크 문제일 수 있습니다.`);
+                        // 토큰 만료 / 미로그인 — 자동 redirect 없이 로그아웃 상태로 전환
+                        if (/Not signed in|401|invalid.?token/i.test(msg)) {
+                          await disableSync();
+                          setSyncState("unconfigured");
+                          setLastSyncedAt(null);
+                          setStatusMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+                          return;
+                        }
+                        alert(`❌ Drive 업로드 실패\n\n${msg}\n\n네트워크 문제일 수 있습니다.`);
                         setStatusMsg(`⚠️ ${msg}`);
-                      } finally { setSyncBusy(false); }
+                      } finally { setSyncBusy(false); setSyncBusyMsg(""); }
                     }}
                     className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded">
                     ↑ 업로드
@@ -307,6 +367,7 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                     onClick={async () => {
                       if (!confirm("Drive 의 데이터로 이 기기를 덮어씁니다. 계속할까요?")) return;
                       setSyncBusy(true);
+                      setSyncBusyMsg("Drive 에서 다운로드 중...");
                       try {
                         const ok = await downloadFromDrive();
                         if (ok) {
@@ -319,9 +380,17 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                         }
                       } catch (e) {
                         const msg = (e as Error).message;
-                        alert(`❌ Drive 다운로드 실패\n\n${msg}\n\n로그인 만료된 경우, 로그아웃 후 다시 로그인하세요.`);
+                        // 토큰 만료 / 미로그인 — 자동 redirect 없이 로그아웃 상태로 전환
+                        if (/Not signed in|401|invalid.?token/i.test(msg)) {
+                          await disableSync();
+                          setSyncState("unconfigured");
+                          setLastSyncedAt(null);
+                          setStatusMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+                          return;
+                        }
+                        alert(`❌ Drive 다운로드 실패\n\n${msg}\n\n네트워크 문제일 수 있습니다.`);
                         setStatusMsg(`⚠️ ${msg}`);
-                      } finally { setSyncBusy(false); }
+                      } finally { setSyncBusy(false); setSyncBusyMsg(""); }
                     }}
                     className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded">
                     ↓ 다운로드
@@ -367,6 +436,21 @@ export function SettingsDialog({ isOpen, onClose, onChanged }: Props) {
                 저장
               </button>
             </div>
+            {/* POST 미지원 (구버전) 워커 경고 */}
+            {proxyStatus === "outdated" && (
+              <div className="p-2 bg-amber-50 border border-amber-300 rounded text-[11px]">
+                <p className="font-bold text-amber-800">
+                  ⚠️ 등록하신 워커가 구버전 (POST 미지원) 입니다
+                </p>
+                <p className="text-amber-700 mt-0.5 leading-relaxed">
+                  기존 기능은 정상 작동합니다. 컨센서스 예상치 차트만 비어 보입니다.
+                </p>
+                <a href={UPDATE_GUIDE_URL} target="_blank" rel="noopener noreferrer"
+                   className="inline-block mt-1.5 text-amber-700 underline font-bold">
+                  📘 5분 업데이트 가이드 ↗
+                </a>
+              </div>
+            )}
             {/* 폴링 주기 — 전용 프록시 있을 때만 의미 (공개는 항상 10초) */}
             <div className="flex items-center gap-2 mt-1">
               <span className={`text-[11px] ${proxyUrl ? "text-gray-700" : "text-gray-400"}`}>

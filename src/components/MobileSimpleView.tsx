@@ -7,13 +7,13 @@ import {
 import { SortSelector, makeSortHandlers } from "./SortSelector";
 import { AuxBatchToggle } from "./AuxBatchToggle";
 import {
-  fetchYahooBatch, fetchTossPrices, fetchNaverInfo, fetchWarning,
+  fetchYahooBatch, fetchTossPrices, fetchNaverInfo, fetchWarning, fetchInvestorHistory,
   fetchYahooChart, fetchKrPriceHistory,
 } from "../lib/api";
 import {
-  US_PAIRS, SECTOR_EMOJI, SECTOR_ORDER,
+  US_PAIRS,
 } from "../lib/usMarketData";
-import { signColor, isSymbolSleeping } from "../lib/format";
+import { isSymbolSleeping } from "../lib/format";
 import {
   getPersonalProxyUrl, setPersonalProxyUrl,
   getEffectivePollMs, getPersonalPollMs, setPersonalPollMs, POLL_OPTIONS,
@@ -27,20 +27,26 @@ import { MarketFlowModal } from "./MarketFlowModal";
 
 // Toss / Yahoo 외부 링크 (UsMarketTab 와 동일 규칙)
 function quoteUrl(symbol: string): string {
-  if (/^[\dA-Za-z]{6}$/.test(symbol)) return `https://tossinvest.com/stocks/A${symbol}`;
+  // 한국 보유 종목 (6자리) 또는 KODEX/.KS ETF (6자리.KS) — 모두 토스
+  const krMatch = /^(\d{6})(?:\.KS)?$/.exec(symbol);
+  if (krMatch) return `https://tossinvest.com/stocks/A${krMatch[1]}`;
   if (symbol === "^KS11") return "https://www.tossinvest.com/indices/KGG01P";
   if (symbol === "^KQ11") return "https://www.tossinvest.com/indices/QGG01P";
   return `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}`;
 }
 import { RefreshIndicator } from "./RefreshIndicator";
+import { forceUpdate } from "./VersionBadge";
+import { NewVersionToast } from "./NewVersionToast";
 import { OnboardingDialog } from "./OnboardingDialog";
 import {
-  exportAll, replaceAllHoldings, replaceAllPeaks, loadHoldings, loadPeaks,
+  exportAll, replaceAllHoldings, replaceAllPeaks, loadHoldings, loadPeaks, loadMemos,
   deleteAllRowsForTicker, removeHolding, renameGroup, deleteGroup,
 } from "../lib/db";
 import { detectPortfolioJson } from "../lib/portfolioImport";
 import { MobileStockCard } from "./MobileStockCard";
+import { MemoDialog } from "./MemoDialog";
 import { TotalRow } from "./TotalRow";
+import { MobileTodayPnLLayer } from "./TodayPnLTable";
 import { SearchDialog } from "./SearchDialog";
 import { EditHoldingDialog } from "./EditHoldingDialog";
 import { HelpDialog, markHelpSeen, shouldShowHelpFirstTime } from "./HelpDialog";
@@ -48,16 +54,46 @@ import { Sparkline } from "./Sparkline";
 import { ValuationModal } from "./ValuationModal";
 import {
   getSyncState, getLastSyncedAt, enableSync, disableSync, pauseSync, resumeSync,
-  uploadToDrive, downloadFromDrive, scheduleAutoSync, checkConflict,
+  uploadToDrive, downloadFromDrive, scheduleAutoSync,
   tryRestoreSession,
 } from "../lib/syncManager";
-import type { ConflictResult } from "../lib/syncManager";
-import { ConflictDialog } from "./ConflictDialog";
+import { isSignedIn, getAccessToken, wasSignedIn } from "../lib/googleAuth";
 import type { Stock } from "../types";
 
-const US_KEY = "__us__";  // 미국 증시 탭 키
+const KR_KEY = "__kr__";  // 한국 (KOSPI/KOSDAQ + 한국 섹터 ETF + 짝 미국 섹터 ETF)
+const US_KEY = "__us__";  // 미국 (환율·매크로·원자재·미국지수·미국 대표 ETF)
 const TAB_KEY = "portfolio-mobile-active-tab";  // 마지막 활성 탭 기억
 const KAKAOPAY_URL = "https://qr.kakaopay.com/FCscirjeF";
+
+// 섹터 탭 — KOSPI/KOSDAQ + EWY/VIX(한국 sentiment) + 섹터 페어
+const KR_ORDER: string[] = [
+  "^KS11", "^KS200",
+  "^KQ11", "^KQ100",
+  "EWY", "^VIX",          // 외국인 투심 + 공포지수
+  "SMH", "091160.KS",     // 반도체
+  "^SOX", "SOX=F",        // 필반 + 선물 (반도체 섹터 매크로)
+  "PAVE", "117700.KS",    // 건설/인프라
+  "LIT", "305720.KS",     // 2차전지
+  "XBI", "244580.KS",     // 바이오
+  "KBE", "091170.KS",     // 은행
+  "ITA", "449450.KS",     // 방산
+  "XLV", "266420.KS",     // 헬스케어
+  "BOTZ", "445290.KS",    // 로봇
+];
+
+// 매크로 탭 — 환율/금리 → 미국지수+선물 → 미국 대표 ETF → 원자재 (맨 아래)
+const US_ORDER: string[] = [
+  "KRW=X", "DX-Y.NYB",
+  "JPY=X", "^TNX",
+  "^IXIC", "NQ=F",
+  "^GSPC", "ES=F",
+  "^N225", "SPY",
+  "QQQ", "DIA",
+  "IWM", "VTI",
+  "GC=F", "SI=F",
+  "HG=F", "CL=F",
+  "NG=F", "BTC-USD",
+];
 
 // 모바일 전용 단순 뷰 (v2 데스크톱 미국증시 표 형식 그대로 이식)
 // 자동 갱신 X — 새로고침 버튼만. 자기 주식/그룹/검색 등 모든 추가 기능 없음.
@@ -69,17 +105,6 @@ function fmtPrice(symbol: string, price: number): string {
   return price.toFixed(2);
 }
 
-interface QuoteRow {
-  kind: "spot" | "future";
-  symbol: string;
-  name: string;
-  desc?: string;
-  price?: number;
-  pct?: number;
-  diff?: number;
-  sleeping: boolean;
-}
-
 export function MobileSimpleView() {
   const queryClient = useQueryClient();
   const [proxyUrl, setProxyUrl] = useState("");
@@ -87,11 +112,10 @@ export function MobileSimpleView() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [editing, setEditing] = useState<Stock | null>(null);
+  const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [valuationTicker, setValuationTicker] = useState<string | null>(null);
   const [savedMsg, setSavedMsg] = useState("");
-  const [, setLastSyncedAt] = useState<string | null>(getLastSyncedAt());
-  const [conflict, setConflict] = useState<ConflictResult | null>(null);
-  const pendingActionRef = useRef<(() => void) | null>(null);
+  const [todayPnLOpen, setTodayPnLOpen] = useState(false);
   // 그룹 탭 길게 누르기 → 액션 시트 (이름 변경 / 삭제)
   const [tabMenu, setTabMenu] = useState<{ key: string; label: string } | null>(null);
   const longPressTimer = useRef<number | null>(null);
@@ -103,30 +127,13 @@ export function MobileSimpleView() {
     return () => clearTimeout(t);
   }, []);
 
-  // sync 모드 ON 일 때 — 앱 로드 시 silent token 갱신 + 충돌 체크
-  useEffect(() => {
-    void (async () => {
-      const restored = await tryRestoreSession();
-      if (!restored) return;
-      const result = await checkConflict();
-      if (result.kind === "conflict") setConflict(result);
-    })();
-  }, []);
-
-  // 편집/검색 액션 시작 전 — 충돌 체크 후 진행
-  const guardedAction = async (action: () => void) => {
-    const result = await checkConflict();
-    if (result.kind === "conflict") {
-      pendingActionRef.current = action;
-      setConflict(result);
-    } else {
-      action();
-    }
-  };
+  // 구글 로그인/충돌 체크는 설정 다이얼로그 열 때만 수행 (아래 settings useEffect 내부).
+  // 검색/편집/메모 등 일반 이동에선 Drive API 호출 안 함.
   const [activeTab, setActiveTab] = useState<string>(() => {
-    if (typeof localStorage === "undefined") return US_KEY;
-    return localStorage.getItem(TAB_KEY) ?? US_KEY;
+    if (typeof localStorage === "undefined") return KR_KEY;
+    return localStorage.getItem(TAB_KEY) ?? KR_KEY;
   });
+  const isSystemTab = activeTab === KR_KEY || activeTab === US_KEY;
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -153,8 +160,13 @@ export function MobileSimpleView() {
     queryFn: loadPeaks,
     refetchOnWindowFocus: false,
   });
+  const { data: memos } = useQuery({
+    queryKey: ["m-memos"],
+    queryFn: loadMemos,
+    refetchOnWindowFocus: false,
+  });
 
-  // 그룹 목록 (account 별 카운트) — 미국증시 + 보유 + 사용자 그룹들
+  // 그룹 목록 (account 별 카운트) — 한국 + 미국 + 보유 + 사용자 그룹들
   const groupTabs = useMemo(() => {
     const counts = new Map<string, number>();
     for (const s of holdings) {
@@ -162,7 +174,8 @@ export function MobileSimpleView() {
       counts.set(acc, (counts.get(acc) || 0) + 1);
     }
     const tabs: { key: string; label: string; count: number }[] = [
-      { key: US_KEY, label: "미국증시", count: 0 },
+      { key: KR_KEY, label: "섹터", count: 0 },
+      { key: US_KEY, label: "매크로", count: 0 },
     ];
     if (counts.has("")) {
       tabs.push({ key: "", label: "보유", count: counts.get("")! });
@@ -176,19 +189,19 @@ export function MobileSimpleView() {
     return tabs;
   }, [holdings]);
 
-  // 저장된 탭이 더이상 없으면 (그룹 삭제 등) 미국증시로 fallback
+  // 저장된 탭이 더이상 없으면 (그룹 삭제 등) 한국으로 fallback
   useEffect(() => {
     if (groupTabs.length === 0) return;
     if (!groupTabs.some(t => t.key === activeTab)) {
-      setActiveTab(US_KEY);
+      setActiveTab(KR_KEY);
     }
   }, [groupTabs, activeTab]);
 
   // 선택된 그룹 종목들 (활성 탭이 그룹일 때만)
   const groupHoldingsUnsorted = useMemo(() => {
-    if (activeTab === US_KEY) return [];
+    if (isSystemTab) return [];
     return holdings.filter(s => normalizeAccount(s.account) === activeTab);
-  }, [holdings, activeTab]);
+  }, [holdings, activeTab, isSystemTab]);
 
   // 그룹 종목들의 KR 가격 fetch (수동 갱신만)
   const groupTickers = groupHoldingsUnsorted
@@ -197,21 +210,20 @@ export function MobileSimpleView() {
   const { data: groupPrices, dataUpdatedAt: groupAt } = useQuery({
     queryKey: ["m-group-prices", activeTab, groupTickers.join(",")],
     queryFn: () => fetchTossPrices(groupTickers),
-    enabled: activeTab !== US_KEY && groupTickers.length > 0,
+    enabled: !isSystemTab && groupTickers.length > 0,
     refetchInterval: REFRESH_MS,
   });
   const groupPriceMap = new Map((groupPrices ?? []).map(p => [p.ticker, p]));
 
   // 비거래일 감지 (PC 와 동일) — 첫 종목 high 없으면 비거래일
-  const groupNonTrading = (groupPrices?.length ?? 0) > 0 && !groupPrices?.[0]?.high;
   // 비거래일에만 일봉 차트 fetch — 카드 가격 박스 sparkline (PC 와 캐시 키 공유)
   const groupChartQs = useQueries({
     queries: groupTickers.map(t => ({
       queryKey: ["kr-price-history", t, "3mo"],
       queryFn: () => fetchKrPriceHistory(t, "3mo"),
-      staleTime: 60 * 60 * 1000,
+      staleTime: 60 * 60 * 1000,    // 1시간 캐시 (장중 fetch 부담 최소화)
       refetchOnWindowFocus: false,
-      enabled: activeTab !== US_KEY && groupNonTrading,
+      enabled: !isSystemTab,  // 장중에도 fetch — AuxIndicators 의 3개월/변동성 표시
     })),
   });
   const groupChartMap = new Map(
@@ -232,12 +244,25 @@ export function MobileSimpleView() {
     queries: groupTickers.map(t => ({
       queryKey: ["m-warning", t],
       queryFn: () => fetchWarning(t),
-      enabled: activeTab !== US_KEY,
+      enabled: !isSystemTab,
       refetchInterval: REFRESH_MS,
     })),
   });
   const warningMap = new Map(
     groupTickers.map((t, i) => [t, warningQs[i]?.data ?? ""])
+  );
+
+  // 종목별 60일 수급 — AuxIndicators (외국인/기관/연기금 60일 누적) 용
+  const investorHistoryQs = useQueries({
+    queries: groupTickers.map(t => ({
+      queryKey: ["m-investor-history", t],
+      queryFn: () => fetchInvestorHistory(t, 60),
+      enabled: !isSystemTab,
+      refetchInterval: REFRESH_MS,
+    })),
+  });
+  const investorHistoryMap = new Map(
+    groupTickers.map((t, i) => [t, investorHistoryQs[i]?.data ?? null])
   );
 
   // 종목별 sector + consensus (Naver) — 그룹 탭에서만 fetch (캐시)
@@ -254,7 +279,7 @@ export function MobileSimpleView() {
       }));
       return map;
     },
-    enabled: activeTab !== US_KEY && groupTickers.length > 0,
+    enabled: !isSystemTab && groupTickers.length > 0,
     refetchOnWindowFocus: false,
   });
 
@@ -268,6 +293,19 @@ export function MobileSimpleView() {
     }
     return sortHoldings(groupHoldingsUnsorted, groupPriceMap, sectorMap, sortKey, sortDir);
   }, [groupHoldingsUnsorted, groupPriceMap, naverInfos.data, sortKey, sortDir]);
+
+  // 같은 ticker 가 속한 그룹들 — 카드 상단 알약 표시용 (전체 holdings 기준)
+  const tickerGroupsMap = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const h of holdings) {
+      const acc = h.account || "";
+      if (!acc) continue;
+      const arr = m.get(h.ticker) ?? [];
+      if (!arr.includes(acc)) arr.push(acc);
+      m.set(h.ticker, arr);
+    }
+    return m;
+  }, [holdings]);
 
   // Yahoo: 본물 + 선물 평탄화 (선행지수만 — ETF 제외)
   const yahooSymbols = US_PAIRS.flatMap(p =>
@@ -283,9 +321,10 @@ export function MobileSimpleView() {
   });
 
   // 활성 탭에 맞는 마지막 갱신 시각 (RefreshIndicator 사용)
-  const lastAt = activeTab === US_KEY ? usAt : (groupAt ?? 0);
+  const lastAt = isSystemTab ? usAt : (groupAt ?? 0);
 
-  const handleRefresh = () => location.reload();
+  // 캐시 + Service Worker 초기화 + 강제 새로고침 (확인 다이얼로그)
+  const handleRefresh = () => void forceUpdate();
 
   // 좌우 스와이프로 그룹 탭 이동 (가로 dx > 세로 dy 일 때만 인정)
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -331,34 +370,6 @@ export function MobileSimpleView() {
     })
   );
 
-  // ─── 섹터별 행 묶음 (현물 + 선물만, ETF 제외) ───
-  function buildRowsForSector(sector: string): QuoteRow[] {
-    const rows: QuoteRow[] = [];
-    const sectorPairs = US_PAIRS.filter(p => p.tier !== "T0" && p.sector === sector);
-
-    // 1) 현물
-    for (const p of sectorPairs) {
-      const q = usMap?.get(p.symbol);
-      rows.push({
-        kind: "spot", symbol: p.symbol, name: p.name, desc: p.desc,
-        price: q?.price, pct: q?.pct, diff: q?.diff,
-        sleeping: isSymbolSleeping(p.symbol),
-      });
-    }
-    // 2) 선물 (현물들 다음에 모아서, 옅은 노랑 배경)
-    for (const p of sectorPairs) {
-      if (!p.future) continue;
-      const fq = usMap?.get(p.future);
-      rows.push({
-        kind: "future", symbol: p.future, name: `${p.name} 선물`,
-        desc: `${p.name} 선물 — 정규장 외 흐름 체크`,
-        price: fq?.price, pct: fq?.pct, diff: fq?.diff,
-        sleeping: isSymbolSleeping(p.future),
-      });
-    }
-    return rows;
-  }
-
   // 장 마감 시 흐리게 표시 여부 (설정값)
   const dimEnabled = getDimSleepingEnabled();
 
@@ -369,19 +380,20 @@ export function MobileSimpleView() {
     <div className="min-h-screen bg-gray-50"
          onTouchStart={handleTouchStart}
          onTouchEnd={handleTouchEnd}>
-      <header className="sticky top-0 z-10 bg-white border-b border-gray-200
+      <NewVersionToast />
+      <header className="sticky top-0 z-30 bg-white border-b border-gray-200
                           px-3 py-2 flex items-center gap-1">
         <h1 className="text-sm font-bold text-gray-800 shrink-0">📈</h1>
         <RefreshIndicator dataUpdatedAt={lastAt}
                           refetchIntervalMs={REFRESH_MS} />
         <button onClick={handleRefresh}
                 disabled={isFetching}
-                title="새로고침 (페이지 reload)"
+                title="최신 버전 적용 (캐시 초기화 + 새로고침)"
                 className="ml-auto p-1.5 rounded hover:bg-gray-100
                             disabled:opacity-50 transition">
           <span className={`inline-block ${isFetching ? "animate-spin" : ""}`}>🔄</span>
         </button>
-        <button onClick={() => guardedAction(() => setSearchOpen(true))}
+        <button onClick={() => setSearchOpen(true)}
                 title="종목 검색 / 추가"
                 className="p-1.5 rounded hover:bg-gray-100 transition">
           🔍
@@ -410,12 +422,12 @@ export function MobileSimpleView() {
       </header>
 
       {/* ─── 그룹 탭 (가로 스크롤, 작은 폰트) — 길게 누르기 = 액션 시트 ─── */}
-      <nav className="sticky top-[44px] z-10 bg-white border-b border-gray-200
+      <nav className="sticky top-[44px] z-30 bg-white border-b border-gray-200
                        px-2 py-1 flex gap-1 overflow-x-auto whitespace-nowrap">
         {groupTabs.map(t => {
           const active = t.key === activeTab;
-          // 시스템 탭(미국 증시)은 길게 누르기 무시
-          const editable = t.key !== US_KEY;
+          // 시스템 탭(한국/미국)은 길게 누르기 무시
+          const editable = t.key !== US_KEY && t.key !== KR_KEY;
           const startLongPress = () => {
             if (!editable) return;
             longPressTimer.current = window.setTimeout(() => {
@@ -455,8 +467,8 @@ export function MobileSimpleView() {
         })}
       </nav>
 
-      {/* ─── 그룹 컨텐츠 (US_KEY 외) ─── */}
-      {activeTab !== US_KEY && (
+      {/* ─── 그룹 컨텐츠 (시스템 탭 외) ─── */}
+      {!isSystemTab && (
         <>
           {/* 정렬 옵션 + 추가지표 일괄 토글 */}
           {groupHoldings.length > 0 && (
@@ -481,9 +493,14 @@ export function MobileSimpleView() {
                                sector={naverInfos.data?.get(s.ticker)?.sector}
                                warning={warningMap.get(s.ticker) || undefined}
                                chart={groupChartMap.get(s.ticker)}
+                               investorHistory={investorHistoryMap.get(s.ticker)}
                                consensus={naverInfos.data?.get(s.ticker)?.consensus}
+                               memo={memos?.get(s.ticker)}
+                               otherGroups={(tickerGroupsMap.get(s.ticker) ?? [])
+                                 .filter(g => g !== (s.account || ""))}
                                onOpenValuation={setValuationTicker}
-                               onEdit={st => guardedAction(() => setEditing(st))}
+                               onOpenMemo={t => setMemoTicker(t)}
+                               onEdit={st => setEditing(st)}
                                onDelete={async st => {
                                  const indep = getIndependentGroupsMode();
                                  const msg = indep
@@ -502,166 +519,111 @@ export function MobileSimpleView() {
                                }} />
             ))}
           </div>
-          {/* 합계 — 화면 하단 fixed (항상 보임) */}
+          {/* 합계 — 화면 하단 fixed.
+              합계 클릭 시 위로 오늘 수익/손해 레이어가 펼쳐짐, 다시 클릭 또는 바깥 탭 시 닫힘. */}
           {groupHoldings.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 z-20
-                             bg-white border-t border-gray-300 shadow-lg
-                             px-3 py-2 flex justify-center">
-              <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
-            </div>
+            <>
+              {/* 바깥 클릭 닫힘용 backdrop (열렸을 때만) */}
+              {todayPnLOpen && (
+                <div className="fixed inset-0 z-30"
+                     onClick={() => setTodayPnLOpen(false)} />
+              )}
+              <div className="fixed bottom-0 left-0 right-0 z-40
+                               pb-2 px-3 flex flex-col items-center gap-2
+                               pointer-events-none">
+                {todayPnLOpen && (
+                  <div className="pointer-events-auto cursor-pointer"
+                       onClick={() => setTodayPnLOpen(false)}>
+                    <MobileTodayPnLLayer holdings={groupHoldings} prices={groupPriceMap} />
+                  </div>
+                )}
+                <div className="pointer-events-auto cursor-pointer"
+                     onClick={() => setTodayPnLOpen(o => !o)}
+                     title={todayPnLOpen ? "닫기" : "오늘 수익/손해 보기"}>
+                  <TotalRow holdings={groupHoldings} prices={groupPriceMap} />
+                </div>
+              </div>
+            </>
           )}
         </>
       )}
 
-      {/* ─── 미국 증시 (default) ─── */}
-      {activeTab === US_KEY && (<>
-
-      {/* ─── Tier 0 핵심 대시보드 (2 columns 카드) ─── */}
-      <div className="px-3 py-2 grid grid-cols-2 gap-2">
-        {tier0.map(p => {
-          const q = usMap?.get(p.symbol);
-          const sleeping = isSymbolSleeping(p.symbol);
-          // 장마감 기준 — prevClose 대비 (비거래일에도 실제 변화 색)
-          const cdiff = q ? q.price - (q.prevClose || q.price) : 0;
-          const isFuture = p.symbol.endsWith("=F");
-          const bg = sleeping && dimEnabled
-            ? "bg-gray-100 border-gray-300"
-            : cdiff > 0 ? "bg-rose-50 border-rose-200"
-            : cdiff < 0 ? "bg-blue-50/70 border-blue-200"
-            : "bg-white border-gray-200";
-          const sign =
-            cdiff > 0 ? "text-rose-600"
-            : cdiff < 0 ? "text-blue-600"
-            : "text-gray-900";
-          const nameColor = isFuture ? "text-amber-700" : "text-gray-900";
-          return (
-            <div key={p.symbol}
-                 className={`relative overflow-hidden flex flex-col gap-0.5
-                              rounded-lg border px-3 py-1.5
-                              ${bg} ${sleeping && dimEnabled ? "opacity-60" : ""}`}>
-              {/* 60일 추이 — 카드 전체 배경 워터마크. 색은 차트 자체 추세
-                  (단, 흐리게 표시 ON + 장마감 종목 → 회색) */}
-              <Sparkline data={t0ChartMap.get(p.symbol) ?? []}
-                         width={300} height={70}
-                         color={sleeping && dimEnabled ? "#94a3b8" : undefined}
-                         className="absolute inset-0 w-full h-full opacity-50
-                                    pointer-events-none" />
-              <div className="relative flex items-baseline gap-1.5">
-                {sleeping && (
-                  <span className="text-[11px] text-gray-400">zZ</span>
-                )}
-                {/* 종목명 자체가 외부 링크 */}
-                <a href={quoteUrl(p.symbol)}
-                   target="_blank" rel="noopener noreferrer"
-                   title={`${p.name} 자세히 보기`}
-                   className={`text-base font-bold ${nameColor} active:underline`}>
-                  {p.name}
-                </a>
-                {/* 매매동향 모달 — KOSPI/KOSDAQ 만 */}
-                {(p.symbol === "^KS11" || p.symbol === "^KQ11") && (
-                  <button onClick={() =>
-                            setMarketFlowFor(p.symbol === "^KS11" ? "KOSPI" : "KOSDAQ")}
-                          title={`${p.name} 매매동향`}
-                          className="ml-1 px-1 py-0.5 rounded text-[10px] text-gray-500
-                                     bg-white/60 active:bg-white border border-gray-200">
-                    📊
-                  </button>
-                )}
-              </div>
-              <div className="relative text-[11px] text-gray-500 truncate">
-                {p.desc}
-              </div>
-              <div className="relative flex items-baseline mt-1">
-                <span className={`flex-1 text-left text-sm tabular-nums ${sign}`}>
-                  {q ? fmtPrice(p.symbol, q.price) : "—"}
-                </span>
-                <span className={`flex-1 text-right text-base font-bold tabular-nums ${sign}`}>
-                  {q && Math.abs(q.pct) >= 0.005
-                    ? `${q.pct >= 0 ? "+" : ""}${q.pct.toFixed(2)}%`
-                    : ""}
-                </span>
-              </div>
+      {/* ─── 한국 / 미국 시스템 탭 ─── */}
+      {isSystemTab && (() => {
+        const order = activeTab === KR_KEY ? KR_ORDER : US_ORDER;
+        // 한국 탭은 KOSPI/KOSDAQ 카드와 짝(미국 ETF/한국 ETF 페어)
+        // — Yahoo 티커 또는 KR ETF .KS 지원
+        return (
+          <div className="px-3 py-2 grid grid-cols-2 gap-2">
+            {order.map(symbol => {
+              const p = tier0.find(x => x.symbol === symbol);
+              if (!p) return null;
+              const q = usMap?.get(p.symbol);
+              const sleeping = isSymbolSleeping(p.symbol);
+              const cdiff = q ? q.price - (q.prevClose || q.price) : 0;
+              const isFuture = p.symbol.endsWith("=F");
+              const bg = sleeping && dimEnabled
+                ? "bg-gray-100 border-gray-300"
+                : cdiff > 0 ? "bg-rose-50 border-rose-200"
+                : cdiff < 0 ? "bg-blue-50/70 border-blue-200"
+                : "bg-white border-gray-200";
+              const sign =
+                cdiff > 0 ? "text-rose-600"
+                : cdiff < 0 ? "text-blue-600"
+                : "text-gray-900";
+              const nameColor = isFuture ? "text-amber-700" : "text-gray-900";
+              return (
+                <div key={p.symbol}
+                     className={`relative overflow-hidden flex flex-col gap-0.5
+                                  rounded-lg border px-3 py-1.5
+                                  ${bg} ${sleeping && dimEnabled ? "opacity-60" : ""}`}>
+                  <Sparkline data={t0ChartMap.get(p.symbol) ?? []}
+                             width={300} height={70}
+                             color={sleeping && dimEnabled ? "#94a3b8" : undefined}
+                             className="absolute inset-0 w-full h-full opacity-50
+                                        pointer-events-none" />
+                  <div className="relative flex items-baseline gap-1.5">
+                    {sleeping && (
+                      <span className="text-[11px] text-gray-400">zZ</span>
+                    )}
+                    <a href={quoteUrl(p.symbol)}
+                       target="_blank" rel="noopener noreferrer"
+                       title={`${p.name} 자세히 보기`}
+                       className={`text-base font-bold ${nameColor} active:underline`}>
+                      {p.name}
+                    </a>
+                    {(p.symbol === "^KS11" || p.symbol === "^KQ11") && (
+                      <button onClick={() =>
+                                setMarketFlowFor(p.symbol === "^KS11" ? "KOSPI" : "KOSDAQ")}
+                              title={`${p.name} 매매동향`}
+                              className="ml-1 px-1 py-0.5 rounded text-[10px] text-gray-500
+                                         bg-white/60 active:bg-white border border-gray-200">
+                        📊
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative text-[11px] text-gray-500 truncate">
+                    {p.desc}
+                  </div>
+                  <div className="relative flex items-baseline mt-1">
+                    <span className={`flex-1 text-left text-sm tabular-nums ${sign}`}>
+                      {q ? fmtPrice(p.symbol, q.price) : "—"}
+                    </span>
+                    <span className={`flex-1 text-right text-base font-bold tabular-nums ${sign}`}>
+                      {q && Math.abs(q.pct) >= 0.005
+                        ? `${q.pct >= 0 ? "+" : ""}${q.pct.toFixed(2)}%`
+                        : ""}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+            <div className="col-span-2 text-[10px] text-gray-400 text-center mt-1 mb-2">
+              {Math.round(REFRESH_MS / 1000)}초마다 자동 갱신
             </div>
-          );
-        })}
-      </div>
-
-      {/* ─── 섹터별 표 카드 ─── */}
-      <div className="px-3 pb-2 space-y-2">
-        {SECTOR_ORDER.map(sector => {
-          const rows = buildRowsForSector(sector);
-          if (rows.length === 0) return null;
-          return (
-            <table key={sector}
-                   className="w-full table-fixed bg-white rounded-lg border border-gray-200
-                               overflow-hidden text-sm">
-              <colgroup>
-                <col style={{ width: "64px" }} />
-                <col />
-                <col style={{ width: "70px" }} />
-                <col style={{ width: "80px" }} />
-              </colgroup>
-              <tbody>
-                {rows.map((r, idx) => {
-                  const isFirst = idx === 0;
-                  const sign = r.diff !== undefined ? signColor(r.diff) : "text-gray-400";
-                  const rowBg =
-                    r.diff !== undefined && r.diff > 0 ? "bg-rose-50"
-                    : r.diff !== undefined && r.diff < 0 ? "bg-blue-50/70"
-                    : "";
-                  return (
-                    <tr key={`${sector}-${r.symbol}`}
-                        className={`${idx < rows.length - 1 ? "border-b border-gray-100" : ""}
-                                     ${rowBg}
-                                     ${r.sleeping && dimEnabled ? "opacity-60" : ""}`}>
-                      {isFirst ? (
-                        <td className="px-2 py-2 font-bold text-gray-800 align-middle
-                                        bg-slate-200 border-r border-gray-300 w-16"
-                            rowSpan={rows.length}>
-                          <div className="flex flex-col items-center gap-0.5">
-                            <span className="text-2xl">{SECTOR_EMOJI[sector] ?? "📊"}</span>
-                            <span className="text-xs font-bold">{sector}</span>
-                          </div>
-                        </td>
-                      ) : null}
-                      <td className="px-2 py-2">
-                        <div className="flex items-baseline gap-1">
-                          {r.sleeping && (
-                            <span className="text-[10px] text-gray-400">zZ</span>
-                          )}
-                          <span className={`text-base font-bold
-                                            ${r.kind === "future" ? "text-amber-700"
-                                              : "text-gray-900"}`}>
-                            {r.name}
-                          </span>
-                        </div>
-                        {r.desc && (
-                          <div className="text-[11px] text-gray-500 truncate
-                                            max-w-[180px] mt-0.5">
-                            {r.desc}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-2 py-2 text-right tabular-nums text-gray-900 font-medium">
-                        {r.price !== undefined ? fmtPrice(r.symbol, r.price) : "—"}
-                      </td>
-                      <td className={`px-2 py-2 text-right tabular-nums text-base font-bold w-24 ${sign}`}>
-                        {r.pct !== undefined && Math.abs(r.pct) >= 0.005
-                          ? `${r.pct >= 0 ? "+" : ""}${r.pct.toFixed(2)}%`
-                          : ""}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          );
-        })}
-        <div className="text-[10px] text-gray-400 text-center mt-3 mb-2">
-          {Math.round(REFRESH_MS / 1000)}초마다 자동 갱신
-        </div>
-      </div>
-      </>)}
+          </div>
+        );
+      })()}
 
       {settingsOpen && (
         <SettingsModal proxyUrl={proxyUrl} setProxyUrl={setProxyUrl}
@@ -693,6 +655,25 @@ export function MobileSimpleView() {
           scheduleAutoSync();
         }} />
 
+      {/* 메모 편집 */}
+      <MemoDialog
+        isOpen={!!memoTicker}
+        onClose={() => setMemoTicker(null)}
+        ticker={memoTicker}
+        stockName={memoTicker
+          ? holdings.find(h => h.ticker === memoTicker)?.name
+          : undefined}
+        curPrice={memoTicker ? groupPriceMap.get(memoTicker)?.price : undefined}
+        avgPrice={memoTicker
+          ? (() => {
+              const h = holdings.find(s => s.ticker === memoTicker && s.shares > 0);
+              return h?.avg_price;
+            })()
+          : undefined}
+        onChanged={() => {
+          void queryClient.invalidateQueries({ queryKey: ["m-memos"] });
+        }} />
+
       {/* 첫 접속 안내 팝업 — 전용 프록시 미설정 시 자동 표시 */}
       <OnboardingDialog onOpenSettings={() => setSettingsOpen(true)} />
 
@@ -709,37 +690,6 @@ export function MobileSimpleView() {
         isOpen={helpOpen}
         onClose={() => { markHelpSeen(); setHelpOpen(false); }}
         variant="mobile"
-      />
-
-      <ConflictDialog
-        isOpen={conflict?.kind === "conflict"}
-        driveTs={conflict?.kind === "conflict" ? conflict.driveTs : ""}
-        lastTs={conflict?.kind === "conflict" ? conflict.lastTs : null}
-        onUseRemote={async () => {
-          try {
-            await downloadFromDrive();
-            void queryClient.invalidateQueries({ queryKey: ["m-holdings"] });
-            void queryClient.invalidateQueries({ queryKey: ["m-peaks"] });
-            setLastSyncedAt(getLastSyncedAt());
-          } catch { /* ignore */ }
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
-        onOverwrite={async () => {
-          try {
-            await uploadToDrive();
-            setLastSyncedAt(getLastSyncedAt());
-          } catch { /* ignore */ }
-          setConflict(null);
-          if (pendingActionRef.current) {
-            pendingActionRef.current();
-            pendingActionRef.current = null;
-          }
-        }}
-        onCancel={() => {
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
       />
 
       {/* 기업가치 모달 — 📊 버튼으로 호출 */}
@@ -844,14 +794,32 @@ function SettingsModal({
   const [pollMs, setPollMs] = useState(getPersonalPollMs());
   const [syncStateLocal, setSyncStateLocal] = useState(getSyncState());
   const [syncBusyLocal, setSyncBusyLocal] = useState(false);
+  const [syncBusyMsgLocal, setSyncBusyMsgLocal] = useState("");
   const [lastSyncedAtLocal, setLastSyncedAtLocal] = useState<string | null>(getLastSyncedAt());
 
   // 모달 열릴 때 현재 데이터 export 해서 textarea 채움
+  // + 토큰 만료 감지 시 자동 logout
   useEffect(() => {
     void (async () => {
       const data = await exportAll();
       setRaw(JSON.stringify(data, null, 2));
       setDataMsg(`현재: 종목 ${data.holdings.length}건 / 피크 ${Object.keys(data.peaks).length}건`);
+
+      // 로그인 상태 검증 → 진짜 만료 시 자동 logout (설정 안에서만 표시)
+      const initial = getSyncState();
+      if (initial === "unconfigured") return;
+      if (isSignedIn()) {
+        void tryRestoreSession();   // 백그라운드 silent refresh
+        return;
+      }
+      if (!wasSignedIn()) return;
+      const token = await getAccessToken();
+      if (!token) {
+        await disableSync();
+        setSyncStateLocal("unconfigured");
+        setLastSyncedAtLocal(null);
+        setDataMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+      }
     })();
   }, []);
 
@@ -919,8 +887,22 @@ function SettingsModal({
          onClick={e => {
            if (e.target === e.currentTarget && downOnBackdropRef.current) onClose();
          }}>
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-sm
+      <div className="relative bg-white rounded-lg shadow-xl w-full max-w-sm
                        max-h-[90vh] flex flex-col">
+        {/* 진행 중 오버레이 — 업로드/다운로드/로그인 */}
+        {syncBusyLocal && syncBusyMsgLocal && (
+          <div className="absolute inset-0 z-10 bg-white/80 backdrop-blur-sm
+                          rounded-lg flex items-center justify-center">
+            <div className="bg-white border border-gray-200 rounded-lg shadow-lg
+                            px-5 py-3 flex items-center gap-3">
+              <span className="inline-block w-5 h-5 border-2 border-blue-500
+                               border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium text-gray-800">
+                {syncBusyMsgLocal}
+              </span>
+            </div>
+          </div>
+        )}
         <header className="px-4 py-3 border-b bg-gray-50 flex items-center">
           <h2 className="text-base font-bold">⚙️ 설정</h2>
           <button onClick={onClose}
@@ -942,23 +924,26 @@ function SettingsModal({
               <button disabled={syncBusyLocal}
                 onClick={async () => {
                   setSyncBusyLocal(true);
+                  setSyncBusyMsgLocal("Google 로그인 중...");
                   setDataMsg("Google 로그인 중...");
                   try {
                     await enableSync();
                     setSyncStateLocal("off");
+                    setSyncBusyMsgLocal("Drive 데이터 확인 중...");
                     const downloaded = await downloadFromDrive();
                     if (downloaded) {
                       void queryClient.invalidateQueries({ queryKey: ["m-holdings"] });
                       void queryClient.invalidateQueries({ queryKey: ["m-peaks"] });
                       setDataMsg("✅ Drive 가져옴 (자동 sync OFF)");
                     } else {
+                      setSyncBusyMsgLocal("첫 업로드 중...");
                       await uploadToDrive();
                       setDataMsg("✅ 첫 업로드 (자동 sync OFF)");
                     }
                     setLastSyncedAtLocal(getLastSyncedAt());
                   } catch (e) {
                     setDataMsg(`⚠️ ${(e as Error).message}`);
-                  } finally { setSyncBusyLocal(false); }
+                  } finally { setSyncBusyLocal(false); setSyncBusyMsgLocal(""); }
                 }}
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700
                            disabled:opacity-50 text-white text-xs rounded">
@@ -991,9 +976,21 @@ function SettingsModal({
                   <button disabled={syncBusyLocal}
                     onClick={async () => {
                       setSyncBusyLocal(true);
+                      setSyncBusyMsgLocal("Drive 에 업로드 중...");
                       try { await uploadToDrive(); setLastSyncedAtLocal(getLastSyncedAt()); setDataMsg("✅ 업로드"); }
-                      catch (e) { setDataMsg(`⚠️ ${(e as Error).message}`); }
-                      finally { setSyncBusyLocal(false); }
+                      catch (e) {
+                        const msg = (e as Error).message;
+                        // 토큰 만료 / 미로그인 — 자동 redirect 없이 로그아웃 상태로
+                        if (/Not signed in|401|invalid.?token/i.test(msg)) {
+                          await disableSync();
+                          setSyncStateLocal("unconfigured");
+                          setLastSyncedAtLocal(null);
+                          setDataMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+                          return;
+                        }
+                        setDataMsg(`⚠️ ${msg}`);
+                      }
+                      finally { setSyncBusyLocal(false); setSyncBusyMsgLocal(""); }
                     }}
                     className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded">
                     ↑ 업로드
@@ -1002,6 +999,7 @@ function SettingsModal({
                     onClick={async () => {
                       if (!confirm("Drive 의 데이터로 덮어쓸까요?")) return;
                       setSyncBusyLocal(true);
+                      setSyncBusyMsgLocal("Drive 에서 다운로드 중...");
                       try {
                         const ok = await downloadFromDrive();
                         if (ok) {
@@ -1010,8 +1008,18 @@ function SettingsModal({
                           setLastSyncedAtLocal(getLastSyncedAt());
                           setDataMsg("✅ 다운로드");
                         } else { setDataMsg("⚠️ Drive 데이터 없음"); }
-                      } catch (e) { setDataMsg(`⚠️ ${(e as Error).message}`); }
-                      finally { setSyncBusyLocal(false); }
+                      } catch (e) {
+                        const msg = (e as Error).message;
+                        if (/Not signed in|401|invalid.?token/i.test(msg)) {
+                          await disableSync();
+                          setSyncStateLocal("unconfigured");
+                          setLastSyncedAtLocal(null);
+                          setDataMsg("ℹ️ 로그인이 만료되어 자동 로그아웃 — 다시 로그인해 주세요");
+                          return;
+                        }
+                        setDataMsg(`⚠️ ${msg}`);
+                      }
+                      finally { setSyncBusyLocal(false); setSyncBusyMsgLocal(""); }
                     }}
                     className="px-2 py-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs rounded">
                     ↓ 다운로드

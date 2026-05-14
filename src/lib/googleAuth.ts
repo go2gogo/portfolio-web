@@ -1,7 +1,8 @@
-// Google OAuth 2.0 Implicit Flow (redirect-based)
-// — 모바일 메모리 부족 환경에서 popup 보다 안정적
+// Google OAuth 2.0 — 첫 로그인은 implicit flow redirect (모바일 안정성),
+// 이후 토큰 갱신은 GIS Token Client 의 silent refresh (hidden iframe) 사용.
 // — Drive appdata 스코프만 (이메일·프로필 미요청)
-// — Token 은 localStorage 에 1시간 캐시 (만료되면 다시 redirect)
+// — Token 은 localStorage 에 1시간 캐시
+// — 만료 5분 전 자동 silent refresh 시도, 실패하면 다음 API 호출 시 null 반환
 
 
 const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string;
@@ -20,10 +21,42 @@ const TOKEN_KEY = "gdrive_token_cache";
 const WAS_SIGNED_IN_KEY = "gdrive_was_signed_in";
 //const PRE_AUTH_PATH_KEY = "gdrive_pre_auth_path";
 
+// silent refresh 를 토큰 만료 N ms 전에 시도
+const SILENT_REFRESH_LEAD_MS = 5 * 60 * 1000;
+
 interface CachedToken { token: string; expiresAt: number; }
+
+interface GisTokenResponse {
+  access_token?: string;
+  expires_in?: string | number;
+  error?: string;
+}
+
+interface GisTokenClient {
+  requestAccessToken: (overrides?: { prompt?: string; hint?: string }) => void;
+}
+
+interface GoogleOAuth2 {
+  initTokenClient: (config: {
+    client_id: string;
+    scope: string;
+    callback: (resp: GisTokenResponse) => void;
+    error_callback?: (err: unknown) => void;
+    prompt?: string;
+  }) => GisTokenClient;
+}
+
+declare global {
+  interface Window {
+    google?: { accounts?: { oauth2?: GoogleOAuth2 } };
+  }
+}
 
 let accessToken: string | null = null;
 let tokenExpiresAt = 0;
+let refreshTimer: number | null = null;
+let tokenClient: GisTokenClient | null = null;
+let pendingSilentResolvers: Array<(t: string | null) => void> = [];
 
 function loadCachedToken(): void {
   try {
@@ -48,15 +81,100 @@ function saveToken(token: string, expiresIn: number): void {
     } satisfies CachedToken));
     localStorage.setItem(WAS_SIGNED_IN_KEY, "1");
   } catch { /* noop */ }
+  scheduleSilentRefresh();
 }
 
 function clearToken(): void {
   accessToken = null;
   tokenExpiresAt = 0;
+  if (refreshTimer !== null) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
   try {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(WAS_SIGNED_IN_KEY);
   } catch { /* noop */ }
+}
+
+// GIS 스크립트가 로드될 때까지 대기 후 token client 초기화 (idempotent)
+function ensureTokenClient(): Promise<GisTokenClient | null> {
+  if (tokenClient) return Promise.resolve(tokenClient);
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const tick = () => {
+      const oauth2 = window.google?.accounts?.oauth2;
+      if (oauth2) {
+        tokenClient = oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPE,
+          callback: (resp) => {
+            if (resp.error || !resp.access_token) {
+              resolveSilent(null);
+              return;
+            }
+            const exp = typeof resp.expires_in === "string"
+              ? parseInt(resp.expires_in, 10)
+              : (resp.expires_in ?? 3600);
+            saveToken(resp.access_token, exp);
+            resolveSilent(resp.access_token);
+          },
+          error_callback: () => resolveSilent(null),
+        });
+        resolve(tokenClient);
+        return;
+      }
+      // GIS 가 끝내 로드되지 않으면 (e.g. 네트워크 차단) 10초 후 포기
+      if (Date.now() - start > 10_000) {
+        resolve(null);
+        return;
+      }
+      window.setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
+function resolveSilent(token: string | null): void {
+  const list = pendingSilentResolvers;
+  pendingSilentResolvers = [];
+  list.forEach((r) => r(token));
+}
+
+// silent refresh 호출 — 사용자 동의 + Google 세션 있으면 hidden iframe 으로 새 토큰 발급
+// 첫 로그인은 redirect 로 처리하므로 여기선 prompt: '' (interactive 없음) 만 사용
+function requestSilentRefresh(): Promise<string | null> {
+  if (!wasSignedIn()) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    pendingSilentResolvers.push(resolve);
+    void ensureTokenClient().then((client) => {
+      if (!client) {
+        resolveSilent(null);
+        return;
+      }
+      try {
+        // prompt: "none" — 완전 silent. 사용자 동의 / 계정 선택 등 UI 없음.
+        //   필요한 경우 error_callback 으로 실패 (popup 안 뜸).
+        // 빈 문자열 "" 은 "처음만 안 묻고 그 외엔 popup 가능" 이라 토큰 만료 시 팝업 노출됨.
+        client.requestAccessToken({ prompt: "none" });
+      } catch {
+        resolveSilent(null);
+      }
+    });
+  });
+}
+
+function scheduleSilentRefresh(): void {
+  if (refreshTimer !== null) {
+    window.clearTimeout(refreshTimer);
+    refreshTimer = null;
+  }
+  if (!accessToken) return;
+  const delay = Math.max(0, tokenExpiresAt - Date.now() - SILENT_REFRESH_LEAD_MS);
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = null;
+    void requestSilentRefresh();
+  }, delay);
 }
 
 // redirect_uri — Google Cloud Console 에 등록된 값과 정확히 일치해야 함
@@ -66,6 +184,17 @@ function clearToken(): void {
 // 페이지 로드 시 즉시 — 1) 캐시 복원, 2) URL fragment 의 token 처리
 loadCachedToken();
 handleAuthRedirect();
+scheduleSilentRefresh();
+
+// 탭이 다시 활성화될 때 토큰이 곧 만료되면 미리 갱신 (background timer suspend 대비)
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (!wasSignedIn()) return;
+    const needsRefreshSoon = !accessToken || (tokenExpiresAt - Date.now() < SILENT_REFRESH_LEAD_MS);
+    if (needsRefreshSoon) void requestSilentRefresh();
+  });
+}
 
 // 로그인 — 전체 페이지가 google 로 redirect (사용자 클릭 후)
 // Promise 안 반환 — redirect 후 다시 돌아올 때 token 처리됨
@@ -127,12 +256,17 @@ export function handleAuthRedirect(): boolean {
   return true;
 }
 
-// 토큰 가져오기 — 캐시만 사용. 만료 시 null (재로그인 필요)
+// 토큰 가져오기 — 캐시 유효 시 즉시 반환, 만료/없음이면 silent refresh 시도
 export async function getAccessToken(): Promise<string | null> {
   if (accessToken && Date.now() < tokenExpiresAt - 30_000) {
     return accessToken;
   }
-  return null;  // 만료 → 사용자가 다시 signIn() 호출 필요
+  // 이전에 로그인한 적 있으면 silent refresh 시도 (사용자 클릭 불필요)
+  if (wasSignedIn()) {
+    const refreshed = await requestSilentRefresh();
+    if (refreshed) return refreshed;
+  }
+  return null;  // 사용자가 다시 signIn() 호출 필요
 }
 
 // 로그아웃 — token revoke + localStorage 삭제

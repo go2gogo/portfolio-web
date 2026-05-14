@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ReactNode } from "react";
 
 // 호버 툴팁 — 마우스 좌표를 따라가는 floating layer.
@@ -16,18 +17,25 @@ export function Tooltip({ content, children, className = "" }: Props) {
   const [pos, setPos] = useState<Pos | null>(null);
   const ref = useRef<HTMLSpanElement | null>(null);
 
-  // viewport 경계 회피 — 우측/하단 너무 가까우면 좌/상으로 뒤집기
+  // viewport 경계 회피 — 마우스 위치 기준 배치.
+  //   가로: 우측 부족하면 좌측 뒤집기.
+  //   세로: 기본 마우스 아래. 아래 공간 부족 시 → "툴팁 세로 크기의 일정 비율(30%)" 만큼만 위로 이동
+  //         → 마우스가 항상 툴팁 상단 30% 지점에 위치 (크기에 비례하므로 작은 툴팁은 살짝, 큰 툴팁은 많이 위로).
   const adjusted = (() => {
     if (!pos) return null;
     const PAD = 12;
-    const W = 580;  // tooltip 최대 폭 추정 (max-w-[560px] + padding)
-    const H = 280;  // 높이 여유
-    let x = pos.x + 14;  // 마우스 우측
-    let y = pos.y + 14;  // 마우스 아래
+    const W = 780;  // tooltip 최대 폭 추정 (max-w-[760px] + padding)
+    const H = 700;  // 높이 여유 (캔들/표/미니차트 포함 시 600+)
+    const SHIFT_RATIO = 0.3;  // 위로 갈 때 마우스가 툴팁 상단에서 차지하는 비율
+    let x = pos.x + 14;
+    let y = pos.y + 14;
     if (typeof window !== "undefined") {
       if (x + W + PAD > window.innerWidth) x = pos.x - W - 14;
-      if (y + H + PAD > window.innerHeight) y = pos.y - H - 14;
       if (x < PAD) x = PAD;
+      // 세로 — 아래 공간 부족 시 비율로 위로 이동
+      if (y + H + PAD > window.innerHeight) {
+        y = pos.y - Math.floor(H * SHIFT_RATIO);
+      }
       if (y < PAD) y = PAD;
     }
     return { x, y };
@@ -49,17 +57,18 @@ export function Tooltip({ content, children, className = "" }: Props) {
       onMouseLeave={() => setPos(null)}
       className={`relative ${className}`}>
       {children}
-      {adjusted && content && (
+      {adjusted && content && typeof document !== "undefined" && createPortal(
         <span
           role="tooltip"
           style={{ position: "fixed", left: adjusted.x, top: adjusted.y, zIndex: 1000 }}
           className="px-3 py-2 rounded-md shadow-xl
                      bg-white text-gray-800 text-[11px] leading-relaxed
                      border border-gray-200
-                     w-max max-w-[560px]
+                     w-max max-w-[760px]
                      pointer-events-none whitespace-normal text-left">
           {content}
-        </span>
+        </span>,
+        document.body,
       )}
     </span>
   );

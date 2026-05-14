@@ -8,13 +8,15 @@ const CandleChartLight = lazy(() => import("./CandleChartLight"));
 const InvestorChartLight = lazy(() => import("./InvestorChartLight"));
 const ShortSellingChart = lazy(() => import("./ShortSellingChart"));
 import {
-  fetchFullValuation, matchBrokerToShareholder,
+  fetchFullValuation, fetchWisereportSeries, matchBrokerToShareholder,
   INDICATOR_SECTIONS, INDICATOR_LABELS, INDICATOR_DESCRIPTIONS,
   formatIndicator, judgeIndicator,
 } from "../lib/fundamentals";
 import type { FundamentalData, ConsensusReport, Shareholder } from "../lib/fundamentals";
+import { FinancialCharts } from "./FinancialCharts";
+import { ConsensusCharts } from "./ConsensusCharts";
 import { signColor } from "../lib/format";
-import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithEvents, fetchKrDisclosures, fetchKrShortSelling } from "../lib/api";
+import { fetchInvestorHistorySafe, fetchKrPriceHistoryWithEvents, fetchKrDisclosures, fetchKrShortSelling, fetchNaverInfo, fetchTossEstimate } from "../lib/api";
 import type { DividendEvent, SplitEvent, DartDisclosure } from "../lib/api";
 import type { PricePoint } from "../lib/api";
 import type { Investor } from "../types";
@@ -227,6 +229,40 @@ export function ValuationModal({
     enabled: isOpen && /^[\dA-Za-z]{6}$/.test(ticker),
     staleTime: 24 * 3600_000,  // 24시간 캐시
   });
+  // 네이버 기업개요 — App.tsx 와 동일 queryKey 라 캐시 공유
+  const { data: naverInfo } = useQuery({
+    queryKey: ["naver", ticker],
+    queryFn: () => fetchNaverInfo(ticker),
+    enabled: isOpen && /^[\dA-Za-z]{6}$/.test(ticker),
+    staleTime: 24 * 3600_000,
+  });
+  // 재무 시계열 (Wisereport cF1001 같은 페이지의 다년치 파싱) — 24시간 캐시
+  const { data: finSeries } = useQuery({
+    queryKey: ["wise-series", ticker],
+    queryFn: () => fetchWisereportSeries(ticker),
+    enabled: isOpen && /^[\dA-Za-z]{6}$/.test(ticker),
+    staleTime: 24 * 3600_000,
+  });
+  // 컨센서스 예상치 — 분기별 발표치 vs 애널리스트 예상 (매출/영업이익/EPS)
+  const estEnabled = isOpen && /^\d{6}$/.test(ticker);
+  const { data: estRevenue } = useQuery({
+    queryKey: ["est", ticker, "revenue"],
+    queryFn: () => fetchTossEstimate(ticker, "revenue"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
+  const { data: estOpIncome } = useQuery({
+    queryKey: ["est", ticker, "operating-income"],
+    queryFn: () => fetchTossEstimate(ticker, "operating-income"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
+  const { data: estEps } = useQuery({
+    queryKey: ["est", ticker, "eps"],
+    queryFn: () => fetchTossEstimate(ticker, "eps"),
+    enabled: estEnabled,
+    staleTime: 24 * 3600_000,
+  });
   const downOnBackdropRef = useRef(false);
 
   if (!isOpen) return null;
@@ -292,6 +328,36 @@ export function ValuationModal({
           {error instanceof Error && (
             <div className="mb-3 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
               fetch 실패: {error.message}
+            </div>
+          )}
+          {/* 기업개요 — 네이버 main.naver 의 #summary_info 파싱 (출처: 에프앤가이드) */}
+          {naverInfo?.description && naverInfo.description.length > 0 && (
+            <section className="mb-3 p-3 bg-slate-50 border border-slate-200 rounded">
+              <header className="flex items-baseline gap-2 mb-1.5">
+                <h3 className="text-sm font-bold text-gray-700">🏢 기업개요</h3>
+                <span className="text-[10px] text-gray-400">출처: 네이버 금융 / 에프앤가이드</span>
+              </header>
+              <ul className="space-y-1 text-[13px] text-gray-700 leading-relaxed">
+                {naverInfo.description.map((line, i) => (
+                  <li key={i} className="flex gap-1.5">
+                    <span className="text-slate-400 shrink-0">·</span>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {/* 재무 추이 — Wisereport 시계열 5개 차트 */}
+          {finSeries && (
+            <div className="mb-3">
+              <FinancialCharts series={finSeries} />
+            </div>
+          )}
+          {/* 컨센서스 예상치 — 분기별 발표 vs 예상 (매출/영업이익/EPS).
+              데이터 모두 null 이라도 ConsensusCharts 가 워커 구버전 안내를 자체 표시. */}
+          {estEnabled && (
+            <div className="mb-3">
+              <ConsensusCharts revenue={estRevenue} operatingIncome={estOpIncome} eps={estEps} />
             </div>
           )}
           {/* 3 컬럼 레이아웃 */}

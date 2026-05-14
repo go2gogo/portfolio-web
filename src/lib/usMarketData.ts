@@ -34,24 +34,36 @@ export const US_PAIRS: Pair[] = [
   { symbol: "CL=F",     name: "WTI 원유",    desc: "국제 유가 — 정유·에너지·인플레", tier: "T0", sector: "dashboard", direction: "neutral" },
   { symbol: "NG=F",     name: "천연가스",     desc: "헨리허브 — LNG·발전·난방·화학", tier: "T0", sector: "dashboard", direction: "neutral" },
   { symbol: "BTC-USD",  name: "비트코인",    desc: "위험자산 — 한국 IT/플랫폼 상관", tier: "T0", sector: "dashboard", direction: "direct" },
-  // 행 3 — 미국 지수 + 야간 선물 + 닛케이
+  // 행 3 — 미국 지수 + 야간 선물 + 닛케이 + 반도체 (필반·필반선물)
   { symbol: "^IXIC",    name: "나스닥",      desc: "미국 기술주 전체", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "NQ=F",     name: "나스닥 선물",  desc: "미장 외 흐름 — 다음 한국장 영향 (24h)", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "^N225",    name: "닛케이 225",   desc: "일본 대형주 — 아시아 sentiment", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "^GSPC",    name: "S&P 500",     desc: "미국 대형주 — 글로벌 리스크 온/오프", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "ES=F",     name: "S&P 500 선물", desc: "미장 외 흐름 — 다음 한국장 영향 (24h)", tier: "T0", sector: "dashboard", direction: "direct" },
-  // 행 4 — 반도체
   { symbol: "^SOX",     name: "필반",        desc: "필라델피아반도체 — 미국 반도체 30개사 지수", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "SOX=F",    name: "필반 선물",    desc: "PHLX 반도체 선물 — 야간 흐름", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "NVDA",     name: "NVIDIA",      desc: "AI 칩 대장 — HBM 수요", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "TSM",      name: "TSMC",        desc: "파운드리 1위 — 업황 대표", tier: "T0", sector: "dashboard", direction: "direct" },
-  // 행 6 — 한국 섹터 KODEX ETF (대표 1개씩, .KS suffix → Yahoo 통해 일관 fetch)
+  // 행 4 — 미국 대표 ETF
+  { symbol: "SPY",      name: "SPY",         desc: "SPDR S&P 500 — 미국 대형주 추종", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "QQQ",      name: "QQQ",         desc: "Invesco NASDAQ 100 — 미국 대형 기술주", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "DIA",      name: "DIA",         desc: "SPDR Dow Jones 30 — 미국 대형주 30선", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "IWM",      name: "IWM",         desc: "iShares Russell 2000 — 미국 소형주", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "VTI",      name: "VTI",         desc: "Vanguard Total Stock Market — 미국 전체", tier: "T0", sector: "dashboard", direction: "direct" },
+  // 행 6 — 미국 섹터 ETF (KODEX 줄과 짝 매칭 — 같은 순서)
+  { symbol: "SMH",   name: "SMH",   desc: "VanEck 반도체 — NVDA·TSM·AMD 등", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "PAVE",  name: "PAVE",  desc: "Global X 미국 인프라 — 건설·소재·기계", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "LIT",   name: "LIT",   desc: "Global X 리튬·배터리", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "XBI",   name: "XBI",   desc: "SPDR 바이오테크 — 중소형 바이오", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "KBE",   name: "KBE",   desc: "SPDR S&P 은행 — 지역은행 포함", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "ITA",   name: "ITA",   desc: "iShares 미국 항공우주·방산 (Lockheed, RTX 등)", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "XLV",   name: "XLV",   desc: "Health Care Select — 미국 대형 헬스케어", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "BOTZ",  name: "BOTZ",  desc: "Global X 로보틱스·AI", tier: "T0", sector: "dashboard", direction: "direct" },
+  // 행 7 — 한국 섹터 KODEX ETF (대표 1개씩, .KS suffix → Yahoo 통해 일관 fetch)
   { symbol: "091160.KS", name: "KODEX 반도체",     desc: "한국 반도체 ETF — 삼성·하이닉스 대표", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "091180.KS", name: "KODEX 자동차",     desc: "현대·기아 자동차 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "117700.KS", name: "KODEX 건설",       desc: "한국 건설주 ETF — 현대건설/삼성물산/GS건설", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "305720.KS", name: "KODEX 2차전지",    desc: "2차전지 산업 ETF — LG·SK", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "244580.KS", name: "KODEX 바이오",     desc: "한국 바이오 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "091170.KS", name: "KODEX 은행",       desc: "한국 은행주 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
-  { symbol: "117700.KS", name: "KODEX 건설",       desc: "한국 건설주 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
+  { symbol: "449450.KS", name: "K-방산",         desc: "한국 방산 ETF — 한화에어로/LIG넥스원/KAI/현대로템", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "266420.KS", name: "KODEX 헬스케어",    desc: "한국 헬스케어 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
   { symbol: "445290.KS", name: "KODEX 로봇",       desc: "K-로봇액티브 ETF", tier: "T0", sector: "dashboard", direction: "direct" },
 ];

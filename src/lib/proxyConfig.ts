@@ -33,6 +33,46 @@ export function setPersonalProxyUrl(url: string | null) {
 export const POLL_OPTIONS = [5_000, 10_000, 30_000, 60_000] as const;
 export const DEFAULT_PUBLIC_POLL_MS = 10_000;
 
+// ─── 개인 프록시 POST 호환성 검증 ─────────────────────────
+// 컨센서스 예상치 API 는 POST 호출 → 구버전 워커는 405 반환.
+// 세션당 1회만 호출하고 결과 캐시 (URL 바뀌면 재검증).
+export type PersonalProxyStatus = "ok" | "outdated" | "no-personal" | "error";
+
+let cachedStatus: { url: string; status: PersonalProxyStatus } | null = null;
+
+export async function checkPersonalProxyPostSupport(): Promise<PersonalProxyStatus> {
+  const personal = getPersonalProxyUrl();
+  if (!personal) {
+    cachedStatus = null;
+    return "no-personal";
+  }
+  if (cachedStatus && cachedStatus.url === personal) return cachedStatus.status;
+  try {
+    const target = "https://wts-info-api.tossinvest.com/api/v2/companies/A005930/financial/estimate/revenue";
+    const url = `${personal}/?url=${encodeURIComponent(target)}`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: AbortSignal.timeout(6000),
+    });
+    let status: PersonalProxyStatus;
+    if (r.status === 405) status = "outdated";
+    else if (r.ok) status = "ok";
+    else status = "error";
+    cachedStatus = { url: personal, status };
+    return status;
+  } catch {
+    cachedStatus = { url: personal, status: "error" };
+    return "error";
+  }
+}
+
+// 워커 URL 변경/해제 시 캐시 무효화
+export function invalidatePersonalProxyStatusCache(): void {
+  cachedStatus = null;
+}
+
 export function getPersonalPollMs(): number {
   try {
     const v = localStorage.getItem(POLL_KEY);

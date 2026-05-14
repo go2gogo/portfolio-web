@@ -5,17 +5,20 @@ import {
   fetchWarning, fetchNaverInfo, fetchKrPriceHistory,
   fetchInvestorHistorySafe,
 } from "./lib/api";
-import { loadHoldings, loadPeaks, updatePeaksForward, removeHolding, renameGroup, deleteGroup, cleanupReservedAccounts, migrateLegacyHoldGroup } from "./lib/db";
+import { loadHoldings, loadPeaks, loadMemos, updatePeaksForward, removeHolding, renameGroup, deleteGroup, cleanupReservedAccounts, migrateLegacyHoldGroup } from "./lib/db";
 import { StockCard } from "./components/StockCard";
+import { MemoDialog } from "./components/MemoDialog";
 import { Tabs, buildTabs, filterByTab, US_MARKET_TAB_KEY } from "./components/Tabs";
 import { TotalRow } from "./components/TotalRow";
+import { TodayPnLTable } from "./components/TodayPnLTable";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { OnboardingDialog } from "./components/OnboardingDialog";
 import { SearchDialog } from "./components/SearchDialog";
 import { EditHoldingDialog } from "./components/EditHoldingDialog";
 import { UsMarketTab } from "./components/UsMarketTab";
 import { RefreshIndicator } from "./components/RefreshIndicator";
-import { VersionBadge } from "./components/VersionBadge";
+import { forceUpdate } from "./components/VersionBadge";
+import { NewVersionToast } from "./components/NewVersionToast";
 import { ProxyStatusBadge } from "./components/ProxyStatusBadge";
 import { useAdaptiveRefreshMs } from "./lib/proxyStatus";
 import {
@@ -29,13 +32,8 @@ import { getEffectivePollMs, getPersonalProxyUrl } from "./lib/proxyConfig";
 import { ValuationModal } from "./components/ValuationModal";
 import { MobileSimpleView } from "./components/MobileSimpleView";
 import { HelpDialog, markHelpSeen, shouldShowHelpFirstTime } from "./components/HelpDialog";
-import {
-  scheduleAutoSync, checkConflict, downloadFromDrive, uploadToDrive,
-  tryRestoreSession,
-} from "./lib/syncManager";
-import type { ConflictResult } from "./lib/syncManager";
-import { ConflictDialog } from "./components/ConflictDialog";
-import type { Stock } from "./types";
+import { scheduleAutoSync } from "./lib/syncManager";
+import type { Stock, Memo } from "./types";
 
 // viewport 감지 — 폰 (≤ 640px) 자동 모바일 뷰
 function useIsMobile(): boolean {
@@ -71,16 +69,16 @@ const queryClient = new QueryClient({
 function Dashboard() {
   const [holdings, setHoldings] = useState<Stock[]>([]);
   const [peaks, setPeaks] = useState<Map<string, number>>(new Map());
+  const [memos, setMemos] = useState<Map<string, Memo>>(new Map());
   const [activeTab, setActiveTab] = useState<string>("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [valuationTicker, setValuationTicker] = useState<string | null>(null);
   const [editing, setEditing] = useState<Stock | null>(null);
+  const [memoTicker, setMemoTicker] = useState<string | null>(null);
   const [donateOpen, setDonateOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [conflict, setConflict] = useState<ConflictResult | null>(null);
-  const pendingActionRef = useRef<(() => void) | null>(null);
 
   // 첫 방문 자동 노출 — 1.5초 지연 (다른 모달과 충돌 회피)
   useEffect(() => {
@@ -89,33 +87,13 @@ function Dashboard() {
     return () => clearTimeout(t);
   }, []);
 
-  // 앱 로드 시 — sync 모드 ON 이면 토큰 silent refresh + 충돌 체크
-  useEffect(() => {
-    void (async () => {
-      const restored = await tryRestoreSession();
-      if (!restored) return;
-      const result = await checkConflict();
-      if (result.kind === "conflict") setConflict(result);
-    })();
-  }, []);
-
   // 데이터 변경 시 — 자동 sync 트리거 (mode ON 일 때만 실행됨)
+  // 구글 로그인/충돌 체크는 설정 다이얼로그 열 때만 수행 (SettingsDialog 내부).
   const initialReloadRef = useRef(true);
   useEffect(() => {
     if (initialReloadRef.current) { initialReloadRef.current = false; return; }
     scheduleAutoSync();
   }, [reloadKey]);
-
-  // 편집/검색 액션 시작 전 — 충돌 체크 후 진행
-  const guardedAction = async (action: () => void) => {
-    const result = await checkConflict();
-    if (result.kind === "conflict") {
-      pendingActionRef.current = action;
-      setConflict(result);
-    } else {
-      action();
-    }
-  };
   // 설정 변경 시 reloadKey 증가 → BASE_REFRESH_MS / usePersonalProxy 재계산
   const BASE_REFRESH_MS = useMemo(() => getEffectivePollMs(), [reloadKey]);
   const usePersonalProxy = useMemo(() => !!getPersonalProxyUrl(), [reloadKey]);
@@ -128,11 +106,12 @@ function Dashboard() {
       const removed = await cleanupReservedAccounts();
       // 잘못 저장된 account="보유" row 정리 (1회) — 빈 그룹과 통합
       const migrated = await migrateLegacyHoldGroup();
-      const [h, p] = await Promise.all([loadHoldings(), loadPeaks()]);
+      const [h, p, m] = await Promise.all([loadHoldings(), loadPeaks(), loadMemos()]);
       // eslint-disable-next-line no-console
-      console.log(`[v3 load] holdings=${h.length}, peaks=${p.size}, cleaned=${removed}, migrated=${migrated}`);
+      console.log(`[v3 load] holdings=${h.length}, peaks=${p.size}, memos=${m.size}, cleaned=${removed}, migrated=${migrated}`);
       setHoldings(h);
       setPeaks(p);
+      setMemos(m);
     })();
   }, [reloadKey]);
 
@@ -280,9 +259,29 @@ function Dashboard() {
     )),
     [chartQs, krxTickers]
   );
+  // OHLC 포함 원본 — StockCard 가격 박스 호버 툴팁의 1개월 캔들차트용
+  const priceHistoryMap = useMemo(
+    () => new Map(chartQs.map((q, i) => [krxTickers[i], q.data ?? []])),
+    [chartQs, krxTickers]
+  );
+
+  // 같은 ticker 가 속한 그룹들 — 카드 상단 알약 표시용
+  // Map<ticker, account[]>  ("" 빈 그룹은 "기본" 으로 표시되고 다중그룹 표시 제외 — 메인 카운트 안 됨)
+  const tickerGroupsMap = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const h of holdings) {
+      const acc = h.account || "";
+      if (!acc) continue;            // 그룹 없는(빈) 항목은 다중그룹 표시에서 제외
+      const arr = m.get(h.ticker) ?? [];
+      if (!arr.includes(acc)) arr.push(acc);
+      m.set(h.ticker, arr);
+    }
+    return m;
+  }, [holdings]);
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <NewVersionToast />
       <header className="bg-white border-b border-gray-200 sticky top-0 z-30">
         <div className="max-w-[1600px] mx-auto flex items-center
                          gap-3 px-6 py-3">
@@ -294,9 +293,16 @@ function Dashboard() {
                             usePersonalProxy={usePersonalProxy}
                             onOpenSettings={() => setSettingsOpen(true)} />
           <div className="flex items-center gap-3 ml-auto">
-            <VersionBadge />
             <button
-              onClick={() => guardedAction(() => setSearchOpen(true))}
+              onClick={() => void forceUpdate()}
+              title={`최신 버전 적용 (캐시 초기화 + 새로고침)\ncommit: ${__COMMIT_HASH__}`}
+              className="px-2 py-1.5 rounded text-sm
+                         text-gray-500 hover:text-blue-600
+                         hover:bg-gray-100 transition">
+              🔄
+            </button>
+            <button
+              onClick={() => setSearchOpen(true)}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700
                          text-white rounded text-sm">
               🔍 검색
@@ -391,17 +397,25 @@ function Dashboard() {
                   consensus={naverMap.get(stock.ticker)?.consensus ?? null}
                   peak={peaks.get(stock.ticker)}
                   chart={chartMap.get(stock.ticker)}
+                  priceHistory={priceHistoryMap.get(stock.ticker)}
                   longHistory={longHistoryMap.get(stock.ticker)}
+                  memo={memos.get(stock.ticker)}
+                  otherGroups={(tickerGroupsMap.get(stock.ticker) ?? [])
+                    .filter(g => g !== (stock.account || ""))}
                   onOpenValuation={setValuationTicker}
-                  onEdit={s => guardedAction(() => setEditing(s))}
+                  onEdit={s => setEditing(s)}
                   onDelete={async s => {
                     await removeHolding(s.ticker, s.account || "");
                     setReloadKey(k => k + 1);
                   }}
+                  onOpenMemo={t => setMemoTicker(t)}
                 />
               ))}
             </div>
-            <TotalRow holdings={visible} prices={priceMap} />
+            <div className="sticky bottom-0 z-40 mt-3 w-full flex flex-wrap items-start gap-2">
+              <TotalRow holdings={visible} prices={priceMap} />
+              <TodayPnLTable holdings={visible} prices={priceMap} />
+            </div>
           </>
         )}
       </main>
@@ -411,36 +425,6 @@ function Dashboard() {
       <HelpDialog
         isOpen={helpOpen}
         onClose={() => { markHelpSeen(); setHelpOpen(false); }}
-      />
-
-      <ConflictDialog
-        isOpen={conflict?.kind === "conflict"}
-        driveTs={conflict?.kind === "conflict" ? conflict.driveTs : ""}
-        lastTs={conflict?.kind === "conflict" ? conflict.lastTs : null}
-        onUseRemote={async () => {
-          try {
-            await downloadFromDrive();
-            setReloadKey(k => k + 1);
-          } catch { /* ignore */ }
-          setConflict(null);
-          // pending action 은 취소 (사용자가 새 데이터 보고 다시 진행)
-          pendingActionRef.current = null;
-        }}
-        onOverwrite={async () => {
-          try {
-            await uploadToDrive();
-          } catch { /* ignore */ }
-          setConflict(null);
-          // 덮어쓰기 후 원래 액션 진행
-          if (pendingActionRef.current) {
-            pendingActionRef.current();
-            pendingActionRef.current = null;
-          }
-        }}
-        onCancel={() => {
-          setConflict(null);
-          pendingActionRef.current = null;
-        }}
       />
 
       <SettingsDialog
@@ -460,6 +444,23 @@ function Dashboard() {
         onClose={() => setEditing(null)}
         stock={editing}
         curPrice={editing ? priceMap.get(editing.ticker)?.price : undefined}
+        onChanged={() => setReloadKey(k => k + 1)}
+      />
+
+      <MemoDialog
+        isOpen={!!memoTicker}
+        onClose={() => setMemoTicker(null)}
+        ticker={memoTicker}
+        stockName={memoTicker
+          ? (holdings.find(h => h.ticker === memoTicker)?.name)
+          : undefined}
+        curPrice={memoTicker ? priceMap.get(memoTicker)?.price : undefined}
+        avgPrice={memoTicker
+          ? (() => {
+              const h = holdings.find(s => s.ticker === memoTicker && s.shares > 0);
+              return h?.avg_price;
+            })()
+          : undefined}
         onChanged={() => setReloadKey(k => k + 1)}
       />
 

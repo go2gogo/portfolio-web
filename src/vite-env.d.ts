@@ -3,6 +3,7 @@
 declare const __BUILD_TIME__: string;
 
 
+
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
@@ -42,3 +43,6 @@ interface Window {
     };
   };
 }
+
+declare const __COMMIT_HASH__: string;
+

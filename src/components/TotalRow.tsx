@@ -38,32 +38,27 @@ export function TotalRow({ holdings, prices }: Props) {
   const totalColor = signColor(pnl) || "text-rose-700";
 
   return (
-    <div className="sticky bottom-0 z-30 mt-3 w-fit bg-white border border-gray-300
+    <div className="w-fit bg-white border border-gray-300
                      rounded-lg shadow-md px-5 py-3
-                     grid grid-cols-[auto_auto] gap-x-8 gap-y-1
-                     text-sm leading-tight">
-      {/* Row 1: 투자원금 (좌)  /  보유 합계 (우, 큰 빨강) */}
-      <div className="text-gray-500">
-        투자원금{" "}
-        <span className="text-gray-800">
-          {totalInvested.toLocaleString()}원
-        </span>
+                     grid grid-cols-[auto_auto_auto_auto]
+                     gap-x-3 gap-y-1 items-baseline
+                     text-sm leading-tight whitespace-nowrap">
+      {/* Row 1: 원금  |  전체 */}
+      <div className="text-gray-500 text-xs">원금</div>
+      <div className="text-right text-gray-800">
+        {totalInvested.toLocaleString()}원
       </div>
-      <div className="text-right">
-        <span className="text-gray-500 mr-2">보유 합계</span>
-        <span className={`font-bold text-xl ${totalColor}`}>
-          {totalCurrent.toLocaleString()}원
-        </span>
-      </div>
-
-      {/* Row 2: 전체수익 (좌 라벨)  /  값+% (우) */}
-      <div className="text-gray-500">전체수익</div>
+      <div className="text-gray-500 text-xs pl-2">전체</div>
       <div className={`text-right font-bold ${signColor(pnl)}`}>
         {formatSigned(pnl)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(2)}%)
       </div>
 
-      {/* Row 3: 어제대비 (좌 라벨)  /  값+% (우) */}
-      <div className="text-gray-500">어제대비</div>
+      {/* Row 2: 현재 (큰 빨강/파랑)  |  오늘 */}
+      <div className="text-gray-500 text-xs">현재</div>
+      <div className={`text-right font-bold text-xl ${totalColor}`}>
+        {totalCurrent.toLocaleString()}원
+      </div>
+      <div className="text-gray-500 text-xs pl-2">오늘</div>
       <div className={`text-right font-bold ${signColor(dayDiff)}`}>
         {formatSigned(dayDiff)} ({dayPct >= 0 ? "+" : ""}{dayPct.toFixed(2)}%)
       </div>

@@ -212,22 +212,19 @@ export function signIn(): Promise<void> {
       client_id: CLIENT_ID,
       scope: SCOPE,
       prompt: "consent",
-      callback: (response: {
-        access_token?: string;
-        expires_in?: number;
-        error?: string;
-        error_description?: string;
-      }) => {
+      callback: (response: GisTokenResponse) => {
         if (response.error || !response.access_token) {
-          reject(new Error(response.error_description || response.error || "Google sign-in failed."));
+          reject(new Error(response.error || "Google sign-in failed."));
           return;
         }
-
-        saveToken(response.access_token, response.expires_in ?? 3600);
+        const expiresIn =
+          typeof response.expires_in === "string"
+            ? Number(response.expires_in)
+            : response.expires_in ?? 3600;
+        saveToken(response.access_token, Number.isFinite(expiresIn) ? expiresIn : 3600);
         resolve();
       },
     });
-
     tokenClient.requestAccessToken();
   });
 }
